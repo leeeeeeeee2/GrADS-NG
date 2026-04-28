@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  fetch-upstream:
+    name: Fetch & verify upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache upstream tarballs
+        uses: actions/cache@v4
+        with:
+          path: upstream/cache
+          key: upstream-${{ hashFiles('upstream/checksums.sha256') }}
+          restore-keys: upstream-
+
+      - name: Fetch canonical upstream sources
+        run: bash scripts/fetch-upstream.sh --no-extract
+
+      - name: Upload GrADS source tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: grads-2.2.1-tarball
+          path: upstream/cache/grads-2.2.1-src.tar.gz
+          retention-days: 1
+
+  verify-structure:
+    name: Verify upstream structure
+    runs-on: ubuntu-latest
+    needs: fetch-upstream
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download GrADS source tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: grads-2.2.1-tarball
+          path: upstream/cache
+
+      - name: Extract and verify source tree
+        run: |
+          mkdir -p upstream/src
+          tar -xf upstream/cache/grads-2.2.1-src.tar.gz -C upstream/src
+
+          # Assert key upstream files exist
+          src_root="$(find upstream/src -maxdepth 1 -mindepth 1 -type d | head -1)"
+          echo "Extracted source root: $src_root"
+          for f in configure.ac src/grads.c; do
+            if [[ ! -f "$src_root/$f" ]]; then
+              echo "MISSING: $src_root/$f" >&2
+              exit 1
+            fi
+            echo "found: $f"
+          done
+
+          # Print upstream version as smoke test
+          version=$(grep -E '^AC_INIT' "$src_root/configure.ac" | head -1)
+          echo "Upstream version line: $version"
+
+  cmake-build:
+    name: CMake build (Linux)
+    runs-on: ubuntu-latest
+    needs: fetch-upstream
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake build-essential pkg-config \
+            libgd-dev libcairo2-dev libreadline-dev \
+            libnetcdf-dev libhdf5-dev libhdf4-alt-dev \
+            libshp-dev libgeotiff-dev libpng-dev zlib1g-dev
+
+      - name: Configure (headless, no OPeNDAP)
+        run: |
+          cmake -B grads-2.2.1/build grads-2.2.1 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_GUI=OFF \
+            -DENABLE_HEADLESS=ON \
+            -DENABLE_DAP=OFF \
+            -DENABLE_GADAP=OFF
+
+      - name: Build
+        run: cmake --build grads-2.2.1/build -j$(nproc)
+
+      - name: Smoke test
+        run: |
+          ./grads-2.2.1/build/grads -help | grep -q "GrADS version 2.2.1"
+          echo "Smoke test passed: grads -help reports version 2.2.1"

@@ -120,3 +120,6 @@ __marimo__/
 # OS
 .DS_Store
 Thumbs.db
+CLAUDE.md
+scripts/fetch-upstream.sh
+upstream/checksums.sha256
