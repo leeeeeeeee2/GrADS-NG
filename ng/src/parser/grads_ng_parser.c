@@ -51,8 +51,8 @@ grads_ng_lexer_t* grads_ng_lexer_create(const char* source) {
     lexer->col = 0;
     
     /* Initialize first token */
-    grads_ng_lexer_next(lexer);
-    
+    if (grads_ng_lexer_next(lexer) != 0) lexer->err = 1;
+
     return lexer;
 }
 
@@ -133,8 +133,6 @@ static int read_string(grads_ng_lexer_t* lexer, char delim) {
 /* Read a number */
 static int read_number(grads_ng_lexer_t* lexer) {
     size_t start = lexer->pos;
-    int has_dot = 0;
-    int has_exp = 0;
     
     /* Integer part */
     while (lexer->pos < lexer->source_len && isdigit(lexer->source[lexer->pos])) {
@@ -143,7 +141,6 @@ static int read_number(grads_ng_lexer_t* lexer) {
     
     /* Fractional part */
     if (lexer->pos < lexer->source_len && lexer->source[lexer->pos] == '.') {
-        has_dot = 1;
         lexer->pos++;
         while (lexer->pos < lexer->source_len && isdigit(lexer->source[lexer->pos])) {
             lexer->pos++;
@@ -153,7 +150,6 @@ static int read_number(grads_ng_lexer_t* lexer) {
     /* Exponent part */
     if (lexer->pos < lexer->source_len && 
         (lexer->source[lexer->pos] == 'e' || lexer->source[lexer->pos] == 'E')) {
-        has_exp = 1;
         lexer->pos++;
         if (lexer->pos < lexer->source_len && 
             (lexer->source[lexer->pos] == '+' || lexer->source[lexer->pos] == '-')) {
@@ -235,8 +231,10 @@ int grads_ng_lexer_next(grads_ng_lexer_t* lexer) {
         return 0;
     }
     
-    /* Number */
-    if (isdigit(c)) {
+    /* Number (integers, floats, scientific notation, leading-dot like .5) */
+    if (isdigit(c) ||
+        (c == '.' && lexer->pos + 1 < lexer->source_len &&
+         isdigit((unsigned char)lexer->source[lexer->pos + 1]))) {
         if (read_number(lexer) < 0) return -1;
         lexer->current.type = TOK_NUMBER;
         return 0;
@@ -271,6 +269,9 @@ int grads_ng_lexer_next(grads_ng_lexer_t* lexer) {
         case '^': lexer->current.type = TOK_CARET; break;
         case '<': lexer->current.type = TOK_LT; break;
         case '>': lexer->current.type = TOK_GT; break;
+        case '&': lexer->current.type = TOK_AND; break;
+        case '|': lexer->current.type = TOK_OR; break;
+        case '!': lexer->current.type = TOK_NOT; break;
         default:
             snprintf(lexer->err_msg, sizeof(lexer->err_msg),
                     "Unknown character '%c' at line %d", c, lexer->line);
@@ -299,6 +300,14 @@ int grads_ng_lexer_next(grads_ng_lexer_t* lexer) {
         } else if (c == '|' && nc == '|') {
             lexer->current.type = TOK_OR;
             lexer->pos++;
+        } else if (c == '!' && nc == '=') {
+            lexer->current.type = TOK_NE;
+            lexer->pos++;
+        } else if ((c == '&' || c == '|') && nc != c) {
+            snprintf(lexer->err_msg, sizeof(lexer->err_msg),
+                    "Single '%c' at line %d; GrADS uses '%c%c' for logical %s",
+                    c, lexer->line, c, c, c == '&' ? "AND" : "OR");
+            return -1;
         }
     }
     
@@ -318,7 +327,8 @@ int grads_ng_lexer_expect(grads_ng_lexer_t* lexer, grads_ng_token_type_t type) {
 
 /* Advance to next token */
 void grads_ng_lexer_advance(grads_ng_lexer_t* lexer) {
-    grads_ng_lexer_next(lexer);
+    if (!lexer || lexer->err) return;
+    if (grads_ng_lexer_next(lexer) != 0) lexer->err = 1;
 }
 
 /* Create parser */
@@ -380,15 +390,30 @@ void grads_ng_ast_destroy(grads_ng_ast_node_t* node) {
     
     if (node->next) grads_ng_ast_destroy(node->next);
     
-    if (node->type == AST_CALL_EXPR && node->value.call.name) {
+    if (node->type == AST_CALL_EXPR) {
+        int i;
+        for (i = 0; i < node->value.call.argc; i++)
+            grads_ng_ast_destroy(node->value.call.argv[i]);
+        free(node->value.call.argv);
         free(node->value.call.name);
+    } else if (node->type == AST_STRING_EXPR ||
+               node->type == AST_IDENT_EXPR ||
+               node->type == AST_BINARY_EXPR ||
+               node->type == AST_UNARY_EXPR) {
+        free(node->value.string);
     }
-    
+
     free(node);
 }
 
 /* Simple parser: parse expression */
 static grads_ng_ast_node_t* parse_expr(grads_ng_parser_t* parser);
+static grads_ng_ast_node_t* parse_unary(grads_ng_parser_t* parser);
+static grads_ng_ast_node_t* parse_power(grads_ng_parser_t* parser);
+
+/* True while parsing may continue: any recorded lexer or parser failure
+ * must stop every loop, since the current token stops advancing then. */
+#define PARSE_OK(p) (!(p)->has_error && !(p)->lexer->err)
 
 /* Parse primary expression */
 static grads_ng_ast_node_t* parse_primary(grads_ng_parser_t* parser) {
@@ -408,11 +433,99 @@ static grads_ng_ast_node_t* parse_primary(grads_ng_parser_t* parser) {
             grads_ng_lexer_advance(lex);
             return node;
             
-        case TOK_IDENT:
-            node = grads_ng_ast_create(AST_IDENT_EXPR);
-            node->value.string = strdup(lex->current.text);
+        case TOK_IDENT: {
+            char* name = strdup(lex->current.text);
+            if (!name) {
+                parser->has_error = 1;
+                snprintf(parser->err_msg, sizeof(parser->err_msg),
+                        "out of memory");
+                return NULL;
+            }
             grads_ng_lexer_advance(lex);
+            if (PARSE_OK(parser) && lex->current.type == TOK_LPAREN) {
+                /* Function call: name(expr, ...). */
+                grads_ng_ast_node_t** argv = NULL;
+                int argc = 0, cap = 0;
+                grads_ng_lexer_advance(lex);
+                node = grads_ng_ast_create(AST_CALL_EXPR);
+                if (!node) {
+                    free(name);
+                    parser->has_error = 1;
+                    return NULL;
+                }
+                node->value.call.name = name;
+                node->value.call.argc = 0;
+                node->value.call.argv = NULL;
+                if (lex->current.type != TOK_RPAREN) {
+                    for (;;) {
+                        grads_ng_ast_node_t* arg = parse_expr(parser);
+                        if (!PARSE_OK(parser) || !arg) {
+                            grads_ng_ast_destroy(arg);
+                            grads_ng_ast_destroy(node);
+                            if (PARSE_OK(parser)) {
+                                parser->has_error = 1;
+                                snprintf(parser->err_msg,
+                                        sizeof(parser->err_msg),
+                                        "bad argument to %s", name);
+                            }
+                            return NULL;
+                        }
+                        if (argc >= 16) {
+                            grads_ng_ast_destroy(arg);
+                            grads_ng_ast_destroy(node);
+                            parser->has_error = 1;
+                            snprintf(parser->err_msg,
+                                    sizeof(parser->err_msg),
+                                    "%s takes at most 16 arguments", name);
+                            return NULL;
+                        }
+                        if (argc >= cap) {
+                            int ncap = cap ? cap * 2 : 4;
+                            grads_ng_ast_node_t** nav =
+                                realloc(argv, (size_t)ncap * sizeof(*nav));
+                            if (!nav) {
+                                grads_ng_ast_destroy(arg);
+                                grads_ng_ast_destroy(node);
+                                parser->has_error = 1;
+                                return NULL;
+                            }
+                            argv = nav;
+                            cap = ncap;
+                        }
+                        argv[argc++] = arg;
+                        /* Incremental ownership: node frees these on any
+                         * later error via grads_ng_ast_destroy. */
+                        node->value.call.argv = argv;
+                        node->value.call.argc = argc;
+                        if (lex->current.type == TOK_COMMA) {
+                            grads_ng_lexer_advance(lex);
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                if (lex->current.type != TOK_RPAREN) {
+                    grads_ng_ast_destroy(node);
+                    parser->has_error = 1;
+                    snprintf(parser->err_msg, sizeof(parser->err_msg),
+                            "Expected ) to close %s(", name);
+                    return NULL;
+                }
+                grads_ng_lexer_advance(lex);
+                node->value.call.argc = argc;
+                /* Shrink note: argv keeps its buffer; destroy frees it. */
+                node->value.call.argv = argv;
+                return node;
+            }
+            node = grads_ng_ast_create(AST_IDENT_EXPR);
+            if (!node) {
+                free(name);
+                parser->has_error = 1;
+                return NULL;
+            }
+            node->value.string = name;
             return node;
+        }
             
         case TOK_LPAREN:
             grads_ng_lexer_advance(lex);
@@ -442,31 +555,50 @@ static grads_ng_ast_node_t* parse_unary(grads_ng_parser_t* parser) {
     
     if (lex->current.type == TOK_NOT || lex->current.type == TOK_MINUS) {
         node = grads_ng_ast_create(AST_UNARY_EXPR);
-        node->value.string = malloc(2);
-        node->value.string[0] = (char)lex->current.type;
-        node->value.string[1] = '\0';
+        if (!node) return NULL;
+        node->op = lex->current.type;
         grads_ng_lexer_advance(lex);
         node->left = parse_unary(parser);
         return node;
     }
-    
-    return parse_primary(parser);
+
+    return parse_power(parser);
+}
+
+/* Parse power (right-associative, binds tighter than unary on its left:
+ * -2^2 parses as -(2^2); 2^-3 and 2^3^2 work as in GrADS/Fortran). */
+static grads_ng_ast_node_t* parse_power(grads_ng_parser_t* parser) {
+    grads_ng_ast_node_t* base = parse_primary(parser);
+
+    if (parser->lexer->current.type == TOK_CARET) {
+        grads_ng_ast_node_t* node = grads_ng_ast_create(AST_BINARY_EXPR);
+        if (!node) return NULL;
+        node->op = TOK_CARET;
+        node->left = base;
+        grads_ng_lexer_advance(parser->lexer);
+        node->right = parse_unary(parser);  /* right side takes unary + power */
+        return node;
+    }
+
+    return base;
 }
 
 /* Parse multiplication/division */
 static grads_ng_ast_node_t* parse_factor(grads_ng_parser_t* parser) {
     grads_ng_ast_node_t* node = parse_unary(parser);
-    
-    while (parser->lexer->current.type == TOK_STAR || 
-           parser->lexer->current.type == TOK_SLASH ||
-           parser->lexer->current.type == TOK_CARET) {
+
+    while (PARSE_OK(parser) &&
+           (parser->lexer->current.type == TOK_STAR ||
+            parser->lexer->current.type == TOK_SLASH)) {
         grads_ng_ast_node_t* new_node = grads_ng_ast_create(AST_BINARY_EXPR);
+        if (!new_node) return NULL;
+        new_node->op = parser->lexer->current.type;
         new_node->left = node;
         grads_ng_lexer_advance(parser->lexer);
         new_node->right = parse_unary(parser);
         node = new_node;
     }
-    
+
     return node;
 }
 
@@ -474,13 +606,13 @@ static grads_ng_ast_node_t* parse_factor(grads_ng_parser_t* parser) {
 static grads_ng_ast_node_t* parse_term(grads_ng_parser_t* parser) {
     grads_ng_ast_node_t* node = parse_factor(parser);
     
-    while (parser->lexer->current.type == TOK_PLUS || 
-           parser->lexer->current.type == TOK_MINUS) {
+    while (PARSE_OK(parser) &&
+           (parser->lexer->current.type == TOK_PLUS ||
+            parser->lexer->current.type == TOK_MINUS)) {
         grads_ng_ast_node_t* new_node = grads_ng_ast_create(AST_BINARY_EXPR);
+        if (!new_node) return NULL;
+        new_node->op = parser->lexer->current.type;
         new_node->left = node;
-        new_node->value.string = malloc(2);
-        new_node->value.string[0] = (char)parser->lexer->current.type;
-        new_node->value.string[1] = '\0';
         grads_ng_lexer_advance(parser->lexer);
         new_node->right = parse_factor(parser);
         node = new_node;
@@ -493,17 +625,17 @@ static grads_ng_ast_node_t* parse_term(grads_ng_parser_t* parser) {
 static grads_ng_ast_node_t* parse_comparison(grads_ng_parser_t* parser) {
     grads_ng_ast_node_t* node = parse_term(parser);
     
-    while (parser->lexer->current.type == TOK_LT || 
-           parser->lexer->current.type == TOK_GT ||
-           parser->lexer->current.type == TOK_LE ||
-           parser->lexer->current.type == TOK_GE ||
-           parser->lexer->current.type == TOK_EQ ||
-           parser->lexer->current.type == TOK_NE) {
+    while (PARSE_OK(parser) &&
+           (parser->lexer->current.type == TOK_LT ||
+            parser->lexer->current.type == TOK_GT ||
+            parser->lexer->current.type == TOK_LE ||
+            parser->lexer->current.type == TOK_GE ||
+            parser->lexer->current.type == TOK_EQ ||
+            parser->lexer->current.type == TOK_NE)) {
         grads_ng_ast_node_t* new_node = grads_ng_ast_create(AST_BINARY_EXPR);
+        if (!new_node) return NULL;
+        new_node->op = parser->lexer->current.type;
         new_node->left = node;
-        new_node->value.string = malloc(3);
-        snprintf(new_node->value.string, 3, "%c%c", 
-                (char)parser->lexer->current.type, '\0');
         grads_ng_lexer_advance(parser->lexer);
         new_node->right = parse_term(parser);
         node = new_node;
@@ -516,8 +648,10 @@ static grads_ng_ast_node_t* parse_comparison(grads_ng_parser_t* parser) {
 static grads_ng_ast_node_t* parse_logical_and(grads_ng_parser_t* parser) {
     grads_ng_ast_node_t* node = parse_comparison(parser);
     
-    while (parser->lexer->current.type == TOK_AND) {
+    while (PARSE_OK(parser) && parser->lexer->current.type == TOK_AND) {
         grads_ng_ast_node_t* new_node = grads_ng_ast_create(AST_BINARY_EXPR);
+        if (!new_node) return NULL;
+        new_node->op = TOK_AND;
         new_node->left = node;
         grads_ng_lexer_advance(parser->lexer);
         new_node->right = parse_comparison(parser);
@@ -531,8 +665,10 @@ static grads_ng_ast_node_t* parse_logical_and(grads_ng_parser_t* parser) {
 static grads_ng_ast_node_t* parse_logical_or(grads_ng_parser_t* parser) {
     grads_ng_ast_node_t* node = parse_logical_and(parser);
     
-    while (parser->lexer->current.type == TOK_OR) {
+    while (PARSE_OK(parser) && parser->lexer->current.type == TOK_OR) {
         grads_ng_ast_node_t* new_node = grads_ng_ast_create(AST_BINARY_EXPR);
+        if (!new_node) return NULL;
+        new_node->op = TOK_OR;
         new_node->left = node;
         grads_ng_lexer_advance(parser->lexer);
         new_node->right = parse_logical_and(parser);
@@ -553,7 +689,8 @@ static grads_ng_ast_node_t* parse_statement(grads_ng_parser_t* parser) {
     grads_ng_ast_node_t* node = NULL;
     grads_ng_ast_node_t* last = NULL;
     
-    while (lex->current.type != TOK_EOF && 
+    while (PARSE_OK(parser) &&
+           lex->current.type != TOK_EOF &&
            lex->current.type != TOK_RBRACE) {
         grads_ng_ast_node_t* stmt = NULL;
         
@@ -620,17 +757,36 @@ static grads_ng_ast_node_t* parse_statement(grads_ng_parser_t* parser) {
 /* Parse program */
 grads_ng_ast_node_t* grads_ng_parser_parse(grads_ng_parser_t* parser) {
     if (!parser || !parser->lexer) return NULL;
-    
+
     grads_ng_ast_node_t* program = grads_ng_ast_create(AST_PROGRAM);
     if (!program) return NULL;
-    
+
     program->left = parse_statement(parser);
-    
+
     if (parser->has_error) {
         grads_ng_ast_destroy(program);
         return NULL;
     }
-    
+
+    /* A lexer failure mid-stream (e.g. a bad character after a valid
+     * prefix) must fail the parse, not silently truncate the input. */
+    if (parser->lexer->err) {
+        parser->has_error = 1;
+        snprintf(parser->err_msg, sizeof(parser->err_msg), "%s",
+                 parser->lexer->err_msg);
+        grads_ng_ast_destroy(program);
+        return NULL;
+    }
+
+    /* Trailing garbage after a complete statement is an error. */
+    if (parser->lexer->current.type != TOK_EOF) {
+        parser->has_error = 1;
+        snprintf(parser->err_msg, sizeof(parser->err_msg),
+                "Unexpected trailing input at line %d", parser->lexer->line);
+        grads_ng_ast_destroy(program);
+        return NULL;
+    }
+
     return program;
 }
 
@@ -645,9 +801,197 @@ void grads_ng_vm_destroy(grads_ng_vm_t* vm) {
     free(vm);
 }
 
+/* Case-insensitive name match for math functions. */
+static int math_name_eq(const char* a, const char* b) {
+    while (*a && *b) {
+        int ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+        if (ca != cb) return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+int grads_ng_math_known(const char *name) {
+    return name && (math_name_eq(name, "abs") || math_name_eq(name, "sqrt") ||
+                    math_name_eq(name, "exp") || math_name_eq(name, "log") ||
+                    math_name_eq(name, "sin") || math_name_eq(name, "cos") ||
+                    math_name_eq(name, "max") || math_name_eq(name, "min") ||
+                    math_name_eq(name, "pow"));
+}
+
+int grads_ng_math_arity(const char *name) {
+    if (!name) return -1;
+    if (math_name_eq(name, "max") || math_name_eq(name, "min") ||
+        math_name_eq(name, "pow"))
+        return 2;
+    return grads_ng_math_known(name) ? 1 : -1;
+}
+
+int grads_ng_math_apply(const char* name, const double* argv, int argc,
+                        double* out, char* err, size_t errlen) {
+    double x;
+
+#define MATH_FAIL(fmt, ...) do { \
+        if (err && errlen > 0) snprintf(err, errlen, fmt, ##__VA_ARGS__); \
+        return -1; \
+    } while (0)
+
+    if (!name || !argv || !out) MATH_FAIL("cannot apply an empty function");
+    if (math_name_eq(name, "max") || math_name_eq(name, "min") ||
+        math_name_eq(name, "pow")) {
+        double y;
+        if (argc != 2)
+            MATH_FAIL("%s takes 2 arguments (%d given)",
+                      name ? name : "?", argc);
+        x = argv[0];
+        y = argv[1];
+        if (math_name_eq(name, "pow")) {
+            /* pow follows arithmetic: any NaN input yields NaN. */
+            if (isnan(x) || isnan(y)) {
+                *out = NAN;
+                return 0;
+            }
+            *out = pow(x, y);
+            if (!isfinite(*out)) MATH_FAIL("power overflow for %g^%g", x, y);
+            return 0;
+        }
+        /* max/min skip a lone NaN (missing loses to valid data);
+         * both NaN stays NaN. Flagged for M7 reference-corpus check. */
+        if (isnan(x)) {
+            *out = y;
+            return 0;
+        }
+        if (isnan(y)) {
+            *out = x;
+            return 0;
+        }
+        *out = math_name_eq(name, "max") ? ((x > y) ? x : y)
+                                         : ((x < y) ? x : y);
+        return 0;
+    }
+    if (argc != 1)
+        MATH_FAIL("%s takes 1 argument (%d given)",
+                  name ? name : "?", argc);
+    x = argv[0];
+    if (isnan(x)) {
+        *out = x;
+        return 0;
+    }
+    if (math_name_eq(name, "abs")) *out = fabs(x);
+    else if (math_name_eq(name, "sqrt")) {
+        if (x < 0.0) MATH_FAIL("sqrt of negative value %g", x);
+        *out = sqrt(x);
+    } else if (math_name_eq(name, "exp")) {
+        *out = exp(x);
+        if (!isfinite(*out)) MATH_FAIL("exp overflow for %g", x);
+    } else if (math_name_eq(name, "log")) {
+        if (x <= 0.0) MATH_FAIL("log of non-positive value %g", x);
+        *out = log(x);
+    } else if (math_name_eq(name, "sin")) *out = sin(x);
+    else if (math_name_eq(name, "cos")) *out = cos(x);
+    else MATH_FAIL("unknown function \"%s\"", name);
+    return 0;
+#undef MATH_FAIL
+}
+
 /* VM: Execute simple AST */
 int grads_ng_vm_exec(grads_ng_vm_t* vm, grads_ng_ast_node_t* program) {
     (void)vm;
     (void)program;
     return 0;
+}
+
+/* Scalar expression evaluator.
+ * GrADS truthiness: 0 is false, anything else is true; results are 1/0.
+ * Division by zero and domain errors are hard errors here: without a data
+ * model there is no UNDEF value to propagate (M3 adds missing-value rules). */
+int grads_ng_ast_eval(const grads_ng_ast_node_t* node, double* out,
+                      char* err, size_t errlen) {
+    double l, r;
+
+#define NG_EVAL_FAIL(fmt, ...) do { \
+        if (err && errlen > 0) snprintf(err, errlen, fmt, ##__VA_ARGS__); \
+        return -1; \
+    } while (0)
+
+    if (!node || !out) NG_EVAL_FAIL("cannot evaluate an empty expression");
+
+    /* Unwrap a parsed program: -e takes exactly one expression statement. */
+    if (node->type == AST_PROGRAM) {
+        const grads_ng_ast_node_t* stmt = node->left;
+        if (!stmt) NG_EVAL_FAIL("empty expression");
+        if (stmt->next) NG_EVAL_FAIL("expected a single expression");
+        return grads_ng_ast_eval(stmt, out, err, errlen);
+    }
+
+    switch (node->type) {
+        case AST_NUMBER_EXPR:
+            *out = node->value.number;
+            return 0;
+
+        case AST_IDENT_EXPR:
+            NG_EVAL_FAIL("variable \"%s\" is not defined (no dataset is open)",
+                         node->value.string ? node->value.string : "?");
+
+        case AST_STRING_EXPR:
+            NG_EVAL_FAIL("a string cannot be used as a number here");
+
+        case AST_UNARY_EXPR:
+            if (grads_ng_ast_eval(node->left, &l, err, errlen) != 0) return -1;
+            if (node->op == TOK_MINUS) { *out = -l; return 0; }
+            if (node->op == TOK_NOT) { *out = (l == 0.0) ? 1.0 : 0.0; return 0; }
+            NG_EVAL_FAIL("unknown unary operator");
+
+        case AST_BINARY_EXPR:
+            if (grads_ng_ast_eval(node->left, &l, err, errlen) != 0) return -1;
+            if (grads_ng_ast_eval(node->right, &r, err, errlen) != 0) return -1;
+            switch (node->op) {
+                case TOK_PLUS:  *out = l + r; return 0;
+                case TOK_MINUS: *out = l - r; return 0;
+                case TOK_STAR:  *out = l * r; return 0;
+                case TOK_SLASH:
+                    if (r == 0.0) NG_EVAL_FAIL("division by zero");
+                    *out = l / r; return 0;
+                case TOK_CARET:
+                    *out = pow(l, r);
+                    if (!isfinite(*out)) NG_EVAL_FAIL("power overflow for %g^%g", l, r);
+                    return 0;
+                case TOK_LT: *out = (l < r) ? 1.0 : 0.0; return 0;
+                case TOK_LE: *out = (l <= r) ? 1.0 : 0.0; return 0;
+                case TOK_GT: *out = (l > r) ? 1.0 : 0.0; return 0;
+                case TOK_GE: *out = (l >= r) ? 1.0 : 0.0; return 0;
+                case TOK_EQ: *out = (l == r) ? 1.0 : 0.0; return 0;
+                case TOK_NE: *out = (l != r) ? 1.0 : 0.0; return 0;
+                case TOK_AND: *out = ((l != 0.0) && (r != 0.0)) ? 1.0 : 0.0; return 0;
+                case TOK_OR:  *out = ((l != 0.0) || (r != 0.0)) ? 1.0 : 0.0; return 0;
+                default: break;
+            }
+            NG_EVAL_FAIL("unknown binary operator");
+
+        case AST_CALL_EXPR: {
+            double vals[16];
+            int i;
+            if (node->value.call.argc > 16)
+                NG_EVAL_FAIL("too many arguments to %s",
+                             node->value.call.name);
+            for (i = 0; i < node->value.call.argc; i++) {
+                if (grads_ng_ast_eval(node->value.call.argv[i], &vals[i],
+                                      err, errlen) != 0) return -1;
+            }
+            if (grads_ng_math_apply(node->value.call.name, vals,
+                                    node->value.call.argc, out,
+                                    err, errlen) != 0) return -1;
+            return 0;
+        }
+
+        default:
+            break;
+    }
+
+    NG_EVAL_FAIL("this statement cannot be evaluated as a number "
+                 "(only arithmetic expressions are supported)");
+#undef NG_EVAL_FAIL
 }

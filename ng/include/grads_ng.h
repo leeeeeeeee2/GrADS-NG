@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Version info */
 #define GRADS_NG_VERSION_MAJOR 0
@@ -54,13 +55,39 @@ typedef struct {
 /* Initialization / Cleanup */
 grads_ng_session_t* grads_ng_init(grads_ng_config_t* config);
 void grads_ng_destroy(grads_ng_session_t* session);
+/* Reason the most recent session call failed, or NULL when it succeeded. */
+const char* grads_ng_session_error(const grads_ng_session_t* session);
 
 /* File operations */
 grads_ng_file_t* grads_ng_open(grads_ng_session_t* session, const char* ctl_path);
 void grads_ng_close(grads_ng_file_t* file);
 
-/* Data access */
+/* File metadata accessors. grads_ng_file_t stays opaque: callers must use
+ * these instead of reaching into the struct. dims/nvars/type return 0 on
+ * success, -1 when file (or any out-pointer for dims) is NULL. */
+int grads_ng_file_dims(const grads_ng_file_t* file,
+                       int* nx, int* ny, int* nz, int* nt);
+int grads_ng_file_nvars(const grads_ng_file_t* file);
+int grads_ng_file_type(const grads_ng_file_t* file);
+/* Dimension selection (`set t` / `set z`), 0-based and range-checked.
+ * select returns 0 or -1 with a message; selected reports current values. */
+int grads_ng_file_select(grads_ng_file_t* file, int t, int z,
+                         char* err, size_t errlen);
+int grads_ng_file_selected(const grads_ng_file_t* file, int* t, int* z);
+
+/* Data access.
+ * Variable handles are borrowed from the file (valid until close, do not
+ * free). Lookup is ASCII case-insensitive like GrADS; NULL when absent. */
 grads_ng_var_t* grads_ng_get_var(grads_ng_file_t* file, const char* varname);
+const char* grads_ng_var_name(const grads_ng_var_t* var);
+int grads_ng_var_levels(const grads_ng_var_t* var);
+double grads_ng_var_undef(const grads_ng_var_t* var);
+const char* grads_ng_file_varname(const grads_ng_file_t* file, int index);
+/* Read one (t, z) slice, 0-based, into out[nx*ny] doubles, x fastest.
+ * The data file opens lazily on the first call. Returns 0 on success,
+ * -1 with a message in err (up to errlen bytes) otherwise. */
+int grads_ng_var_slice(grads_ng_var_t* var, int t, int z, double* out,
+                       char* err, size_t errlen);
 int grads_ng_read_data(grads_ng_var_t* var, int ix, int iy, int iz, int it, void* buffer);
 int grads_ng_write_data(grads_ng_var_t* var, int ix, int iy, int iz, int it, const void* buffer);
 

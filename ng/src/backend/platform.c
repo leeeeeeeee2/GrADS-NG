@@ -80,12 +80,11 @@ void platform_dirname(const char* path, char* result) {
 }
 
 void platform_join_path(const char* dir, char* result, const char* file) {
-    size_t dlen, flen;
-    
+    size_t dlen;
+
     if (!dir || !result || !file) return;
-    
+
     dlen = strlen(dir);
-    flen = strlen(file);
     
     strcpy(result, dir);
     
@@ -203,10 +202,7 @@ size_t platform_read_file(platform_file_t* file, void* buf, size_t size, size_t 
     lseek(file->fd, offset, SEEK_SET);
     ret = read(file->fd, buf, size);
 #else
-    pread(file->fd, buf, size, offset);
-    if (ret < 0) {
-        ret = -1;
-    }
+    ret = pread(file->fd, buf, size, offset);
 #endif
     
     if (ret < 0) {

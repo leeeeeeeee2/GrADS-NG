@@ -105,6 +105,7 @@ typedef enum {
 /* AST node */
 typedef struct grads_ng_ast_node {
     grads_ng_ast_type_t type;
+    int op;  /* operator token (grads_ng_token_type_t) for BINARY/UNARY nodes */
     struct grads_ng_ast_node* left;
     struct grads_ng_ast_node* right;
     struct grads_ng_ast_node* next;  /* For lists */
@@ -128,6 +129,7 @@ typedef struct {
     int col;
     grads_ng_token_t current;
     char err_msg[256];
+    int err;  /* sticky lexer failure; set when any advance fails */
 } grads_ng_lexer_t;
 
 /* Parser */
@@ -156,6 +158,27 @@ const char* grads_ng_parser_error(grads_ng_parser_t* parser);
 /* AST functions */
 grads_ng_ast_node_t* grads_ng_ast_create(grads_ng_ast_type_t type);
 void grads_ng_ast_destroy(grads_ng_ast_node_t* node);
+
+/* Scalar evaluator: folds number/unary/binary/comparison/logical nodes.
+ * Returns 0 and stores the result in *out on success; returns -1 with a
+ * message in err (up to errlen bytes) for undefined variables,
+ * unimplemented nodes, division by zero, or domain errors.
+ * Pure scalar stage of the M3 array evaluator: same AST, same precedence. */
+int grads_ng_ast_eval(const grads_ng_ast_node_t* node, double* out,
+                      char* err, size_t errlen);
+
+/* One math-function application shared by scalar and array evaluation.
+ * Supported (case-insensitive): abs, sqrt, exp, log (natural logarithm),
+ * sin, cos (1 argument); max, min, pow (2 arguments, elementwise).
+ * Missing-value rule: a NaN input yields NaN, except max/min which let a
+ * lone NaN lose to valid data (both NaN yields NaN; M7 corpus check pending).
+ * Domain errors fail with a message. */
+int grads_ng_math_apply(const char* name, const double* argv, int argc,
+                        double* out, char* err, size_t errlen);
+/* True for the names math_apply implements. */
+int grads_ng_math_known(const char *name);
+/* Expected argument count (1 or 2), or -1 for unknown names. */
+int grads_ng_math_arity(const char *name);
 
 /* Interpreter (runtime) */
 typedef struct {

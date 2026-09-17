@@ -57,6 +57,9 @@ typedef struct {
     char     dset[NG_CTL_PATHLEN];
     int      template;      /* 1 = filename contains %y4/%m2/etc. tokens */
 
+    /* Directory holding the descriptor (for ^-relative DSET resolution). */
+    char     ctldir[NG_CTL_PATHLEN];
+
     /* Data type */
     ng_dtype_t dtype;
     int      byteswap;

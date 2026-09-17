@@ -31,7 +31,7 @@ void platform_cleanup(void);
 /* Path operations */
 void platform_basename(const char* path, char* result);
 void platform_dirname(const char* path, char* result);
-void platform_join_path(const char* dir, const char* file, char* result);
+void platform_join_path(const char* dir, char* result, const char* file);
 void platform_resolve_path(const char* path, char* result);
 int platform_path_exists(const char* path);
 int platform_is_absolute(const char* path);
