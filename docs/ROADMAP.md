@@ -55,13 +55,34 @@ Goal: smallest useful vertical slice through CLI → dispatch → session.
       overflow); unknown names/shapes are hard errors. `test_eval` (26 checks).
 - [x] `set t/z` selection + `q dims`; `d <expr>` end to end; `ctest` 24/24
       green, zero warnings.
-- [x] M4 slice 1: multi-argument `max/min/pow` elementwise (scalar + array),
-  max/min skip lone missing, `test_eval` +9, `test_expr` +7, CLI `d max`;
-  `ctest` 25/25 green, zero warnings.
+- [x] M4 slice 1: `pow` elementwise (scalar + array); `test_expr`/`test_eval`
+  cover it. (Earlier elementwise `max/min` removed: reference-probed as
+  reductions-only — `max(hgt,100)` and `max(hgt,tsfc)` both fail in
+  2.2.1.oga.1 with "Too many or too few args".)
 - [x] `close N`: reference-verified against 2.2.1.oga.1 (number required,
   last-file-only, trailing words ignored); 7 CLI tests; `ctest` 32/32 green.
-- [ ] M4 slice 2: time/ensemble aggregation (`ave` needs t-range syntax).
-- [ ] Slicing/subscript dimensions beyond the selected (t,z).
+- [x] M4 slice 2: `max/min/ave/sum(expr, dim=a, dim=b)` reductions over t/z
+  index ranges (EQUAL-node dim args, `lev` = z alias, strict in-file bounds,
+  missing skipped, selection restored); unit + CLI tests; `ctest` 35/35
+  green, zero warnings. Left for later: x/y/e ranges, multi-dim calls,
+  world-coordinate bounds, strict-vs-reference overshoot documented in
+  COMPATIBILITY.md.
+- [x] Slicing slice 1: `set x/y` grid-index windows (file state + API +
+  evaluator clipping + `q dims`), strict in-file bounds; `ctest` 39/39
+  green, zero warnings.
+- [x] Slicing slice 2: world-coordinate `set lon/lat/lev` (LINEAR inverse
+  round-half-up, LEVELS nearest with observed tie rule, strict storage,
+  reference-style echoes, fractional grid snapping); unit + CLI tests;
+  `ctest` 42/42 green, zero warnings.
+- [x] Time slice 1: `ng/src/time/` subsystem (real Gregorian calendar,
+  start-anchored MO/YR stepping with forward spill, nearest-step snap
+  ties up, eager TDEF validation), `set time`, `q dims` Time; unit +
+  CLI tests; `ctest` 52/52 green, zero warnings. Left for later:
+  varying `t`/`z` ranges, subscript syntax in `d`, relative
+  time offsets.
+- [x] `set e`: EDEF names + `sel_e` + ensemble-outermost reader offsets +
+  CLI (`E set to N N` echo, `q dims` Ens, out-of-range degrade-to-missing
+  with warning); unit + CLI tests; `ctest` 60/60 green, zero warnings.
 - Done when: `(tsfc-273.16)*9/5+32`-class expressions match reference values.
 
 ## M4 — Core Analysis
@@ -70,11 +91,18 @@ Goal: smallest useful vertical slice through CLI → dispatch → session.
   interpolation stubs hardened into implementations.
 - Done when: each op has unit + integration tests against synthetic data.
 
-## M5 — Rendering
+## M5 — Rendering (in progress)
 
 - Implement `render/canvas.h` with a dependency-free software rasterizer
   (PPM/PNG via miniz or stb-style single file); Cairo backend optional.
 - Primitives: line, contour, shaded, vector, text, map frame; `print`/`gxprint`.
+- [x] Slice 1: shaded-grid PPM backend (`ng/src/render/shade.h/.c`,
+  dependency-free, byte-deterministic: linear gray 0-255 over valid range,
+  NaN = magenta, y=0 at bottom, 10px cells) wired behind `gxprint` (+ `-o`
+  output dir; legacy `print` explains it is superseded); `test_render`
+  (18 checks incl. byte-exact header/pixel rows) + 4 CLI tests;
+  `ctest` 57/57 green, zero warnings. Left for later: line/contour/
+  vector/text/map primitives, PNG output.
 - Done when: commands produce byte-comparable output files in CI.
 
 ## M6 — Script Compatibility

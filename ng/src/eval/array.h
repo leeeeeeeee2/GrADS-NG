@@ -21,6 +21,9 @@
 typedef struct {
     double *data;   /* nx*ny values, NaN = missing */
     int nx, ny;
+    /* 1-based ensemble that read outside 1..ne (data degraded to missing),
+     * or -1 when every operand read in range. The CLI warns from this. */
+    int e_bad;
 } ng_array_t;
 
 void ng_array_free(ng_array_t *a);

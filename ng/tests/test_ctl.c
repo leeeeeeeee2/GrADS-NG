@@ -118,6 +118,61 @@ int main(int argc, char **argv) {
         ng_ctl_free(c);
     }
 
+    /* EDEF member names: same-line, following-line, and malformed. */
+    c = ng_ctl_parse(levels, &err);
+    CHECK(c != NULL && c->ens_names != NULL &&
+          strcmp(c->ens_names[0], "memA") == 0 &&
+          strcmp(c->ens_names[1], "memB") == 0,
+          "levels same-line EDEF names memA/memB");
+    ng_ctl_free(c);
+    {
+        const char *p = make_tmp("test_tmp_edef.ctl",
+            "DSET x.dat\nXDEF 1 LINEAR 0 1\nYDEF 1 LINEAR 0 1\n"
+            "ZDEF 1 LINEAR 0 1\nTDEF 1 LINEAR 00Z01JAN2000 1DY\n"
+            "EDEF 3 NAMES\n* comment skipped\n\nalpha\nbeta\ngamma\n"
+            "VARS 1\na 0 1 A\nENDVARS\n");
+        CHECK(p != NULL, "write following-line EDEF fixture");
+        c = ng_ctl_parse(p, &err);
+        CHECK(c != NULL, "parse following-line EDEF (%s)",
+              err ? err : "ok");
+        if (c) {
+            CHECK(c->ne == 3 && c->ens_names != NULL &&
+                  strcmp(c->ens_names[0], "alpha") == 0 &&
+                  strcmp(c->ens_names[2], "gamma") == 0,
+                  "following-line EDEF names kept");
+            ng_ctl_free(c);
+        }
+        remove(p);
+
+        p = make_tmp("test_tmp_edefbare.ctl",
+            "DSET x.dat\nXDEF 1 LINEAR 0 1\nYDEF 1 LINEAR 0 1\n"
+            "ZDEF 1 LINEAR 0 1\nTDEF 1 LINEAR 00Z01JAN2000 1DY\n"
+            "EDEF 2\nVARS 1\na 0 1 A\nENDVARS\n");
+        c = ng_ctl_parse(p, &err);
+        CHECK(c != NULL && c->ne == 2 && c->ens_names == NULL,
+              "bare EDEF stores no names (%s)", err ? err : "ok");
+        ng_ctl_free(c);
+        remove(p);
+
+        p = make_tmp("test_tmp_edefshort.ctl",
+            "DSET x.dat\nXDEF 1 LINEAR 0 1\nYDEF 1 LINEAR 0 1\n"
+            "ZDEF 1 LINEAR 0 1\nTDEF 1 LINEAR 00Z01JAN2000 1DY\n"
+            "EDEF 2 NAMES\nonly\nVARS 1\na 0 1 A\nENDVARS\n");
+        c = ng_ctl_parse(p, &err);
+        CHECK(c == NULL && err && strstr(err, "EDEF needs 2 member names"),
+              "truncated EDEF names fail (got %s)", err ? err : "(null)");
+        remove(p);
+
+        p = make_tmp("test_tmp_edefmany.ctl",
+            "DSET x.dat\nXDEF 1 LINEAR 0 1\nYDEF 1 LINEAR 0 1\n"
+            "ZDEF 1 LINEAR 0 1\nTDEF 1 LINEAR 00Z01JAN2000 1DY\n"
+            "EDEF 1 NAMES a b\nVARS 1\na 0 1 A\nENDVARS\n");
+        c = ng_ctl_parse(p, &err);
+        CHECK(c == NULL && err && strstr(err, "too many ensemble names"),
+              "extra EDEF names fail (got %s)", err ? err : "(null)");
+        remove(p);
+    }
+
     /* Template token widths. */
     {
         const char *p = make_tmp("test_tmp_tpl.ctl",
@@ -187,6 +242,35 @@ int main(int argc, char **argv) {
         c = ng_ctl_parse(p, &err);
         CHECK(c == NULL && err && strstr(err, "PDEF"),
               "PDEF honestly rejected (got %s)", err ? err : "(null)");
+        remove(p);
+
+        /* TDEF validation is eager, like the reference open. */
+        p = make_tmp("test_tmp_badtdef.ctl",
+            "DSET x.dat\nXDEF 1 LINEAR 0 1\nYDEF 1 LINEAR 0 1\n"
+            "ZDEF 1 LINEAR 0 1\nTDEF 2 LINEAR GARBAGE 1DY\n"
+            "VARS 1\na 0 1 A\nENDVARS\n");
+        c = ng_ctl_parse(p, &err);
+        CHECK(c == NULL && err && strstr(err, "start time"),
+              "bad TDEF date rejected (got %s)", err ? err : "(null)");
+        remove(p);
+
+        p = make_tmp("test_tmp_badincr.ctl",
+            "DSET x.dat\nXDEF 1 LINEAR 0 1\nYDEF 1 LINEAR 0 1\n"
+            "ZDEF 1 LINEAR 0 1\nTDEF 2 LINEAR 00Z01JAN2000 1XX\n"
+            "VARS 1\na 0 1 A\nENDVARS\n");
+        c = ng_ctl_parse(p, &err);
+        CHECK(c == NULL && err && strstr(err, "increment"),
+              "bad TDEF unit rejected (got %s)", err ? err : "(null)");
+        remove(p);
+
+        p = make_tmp("test_tmp_zeroincr.ctl",
+            "DSET x.dat\nXDEF 1 LINEAR 0 1\nYDEF 1 LINEAR 0 1\n"
+            "ZDEF 1 LINEAR 0 1\nTDEF 2 LINEAR 00Z01JAN2000 0DY\n"
+            "VARS 1\na 0 1 A\nENDVARS\n");
+        c = ng_ctl_parse(p, &err);
+        CHECK(c == NULL && err && strstr(err, "increment"),
+              "zero TDEF increment rejected (got %s)",
+              err ? err : "(null)");
         remove(p);
     }
 

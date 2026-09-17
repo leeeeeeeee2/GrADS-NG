@@ -12,6 +12,7 @@
 #include "grads_ng.h"
 #include "parser/grads_ng_parser.h"
 #include "array.h"
+#include "shade.h"
 
 /* exec_command results */
 #define NG_CMD_OK   0
@@ -25,6 +26,9 @@ typedef struct {
     grads_ng_file_t* files[NG_MAX_OPEN];
     char paths[NG_MAX_OPEN][512];
     int nfiles;
+    const char* output_dir;      /* -o DIR; relative gxprint paths land here */
+    ng_array_t* last;            /* last `d` result (owned), for `gxprint` */
+    char last_label[512];
 } ng_cli_state_t;
 
 /* ASCII case-insensitive word comparison (portable across MSVC/POSIX). */
@@ -37,6 +41,28 @@ static int cmd_word_eq(const char* a, const char* b) {
     return *a == *b;
 }
 
+/* Parse one coordinate word (double, fully consumed, finite). */
+static int parse_world(const char* w, double* out) {
+    char* end;
+    double v;
+    if (!w || *w == '\0') return -1;
+    v = strtod(w, &end);
+    if (end == w || *end != '\0' || !isfinite(v)) return -1;
+    *out = v;
+    return 0;
+}
+
+/* Snap a grid position to an index with reference round-half-up
+ * (`set x 1.5` sticks at grid 2, like `set lon 45` on a 90-step axis).
+ * Clamped to long range; the caller rejects values below 1 and the
+ * selection call rejects anything past the grid end. */
+static long snap_grid(double v) {
+    double g = floor(v + 0.5);
+    if (g > 2147483647.0) return 2147483647L;
+    if (g < -2147483647.0) return -2147483647L;
+    return (long)g;
+}
+
 static void print_cmd_help(void) {
     printf("Supported commands:\n");
     printf("  open <file.ctl>   Open a GrADS descriptor file\n");
@@ -45,7 +71,15 @@ static void print_cmd_help(void) {
     printf("  q dims            Show dimension selection\n");
     printf("  set t N           Select time step (1-based)\n");
     printf("  set z N           Select level index (1-based)\n");
+    printf("  set x A [B]       Select X window (1-based grid indices)\n");
+    printf("  set y A [B]       Select Y window (1-based grid indices)\n");
+    printf("  set lon A [B]     Select X window by longitude\n");
+    printf("  set lat A [B]     Select Y window by latitude\n");
+    printf("  set lev V         Select level by value\n");
+    printf("  set time WHEN     Select time step (e.g. 00Z03JAN1987)\n");
+    printf("  set e N           Select ensemble member (1-based)\n");
     printf("  d <expr>          Summarize an expression slice\n");
+    printf("  gxprint out.ppm   Write the last display as shaded PPM\n");
     printf("  help              Show this list\n");
     printf("  quit | exit       Leave GrADS-NG\n");
 }
@@ -76,7 +110,7 @@ static void print_file_summary(int num, const char* path, grads_ng_file_t* f) {
 /* GrADS commands accepted but scheduled for later milestones. */
 static const char* ng_future_cmds[] = {
     "sdfopen", "xdfopen", "define",
-    "clear", "draw", "print", "gxprint", "enable", "disable",
+    "clear", "draw", "enable", "disable",
     "reinit", "reset", NULL
 };
 
@@ -235,21 +269,41 @@ static int exec_command(ng_cli_state_t* st, char* line) {
 
         if (cmd_word_eq(qword, "dims")) {
             grads_ng_file_t* f;
-            int nx, ny, nz, nt, t, z;
+            int nx, ny, nz, nt, t, z, e, ne;
+            int x1, x2, y1, y2;
             if (st->nfiles == 0) {
                 fprintf(stderr, "ERROR: no files are open.\n\nUse:\n    open <file.ctl>\n");
                 return NG_CMD_ERR;
             }
             f = st->files[st->nfiles - 1];
             if (grads_ng_file_dims(f, &nx, &ny, &nz, &nt) != 0 ||
-                grads_ng_file_selected(f, &t, &z) != 0) {
+                grads_ng_file_selected(f, &t, &z) != 0 ||
+                grads_ng_file_selected_e(f, &e) != 0 ||
+                (ne = grads_ng_file_ne(f)) < 0 ||
+                grads_ng_file_window(f, &x1, &x2, &y1, &y2) != 0) {
                 fprintf(stderr, "ERROR: cannot describe the open file.\n");
                 return NG_CMD_ERR;
             }
             printf("Default file %d: %s\n", st->nfiles,
                    st->paths[st->nfiles - 1]);
-            printf("  X: 1..%d  Y: 1..%d  Z: %d of %d  T: %d of %d\n",
-                   nx, ny, z + 1, nz, t + 1, nt);
+            {
+                char tstr[32] = "";
+                const char* ens = grads_ng_file_ens_name(f, e + 1);
+                char ensbuf[64];
+                grads_ng_file_time_at(f, t, tstr, sizeof(tstr));
+                if (ens) {
+                    snprintf(ensbuf, sizeof(ensbuf), "%s", ens);
+                } else if (grads_ng_file_ens_name(f, 1) != NULL) {
+                    /* EDEF names exist but e is out of range: the
+                     * reference prints a NULL member name here. */
+                    snprintf(ensbuf, sizeof(ensbuf), "(null)");
+                } else {
+                    snprintf(ensbuf, sizeof(ensbuf), "%d", e + 1);
+                }
+                printf("  X: %d..%d of %d  Y: %d..%d of %d  Z: %d of %d  T: %d of %d  Time = %s  E: %d of %d  Ens = %s\n",
+                       x1 + 1, x2 + 1, nx, y1 + 1, y2 + 1, ny,
+                       z + 1, nz, t + 1, nt, tstr, e + 1, ne, ensbuf);
+            }
             return NG_CMD_OK;
         }
         if (!cmd_word_eq(qword, "file")) {
@@ -309,13 +363,15 @@ static int exec_command(ng_cli_state_t* st, char* line) {
         }
         grads_ng_parser_destroy(parser);
 
-        /* Single unknown name keeps the listing error. */
+        /* Single unknown name keeps the listing error. The name is copied
+         * before the tree is freed: stmt borrows from ast. */
         stmt = (ast->type == AST_PROGRAM) ? ast->left : ast;
         if (stmt && stmt->type == AST_IDENT_EXPR && !stmt->next &&
             !grads_ng_get_var(f, stmt->value.string)) {
+            char badname[128];
+            snprintf(badname, sizeof(badname), "%s", stmt->value.string);
             grads_ng_ast_destroy(ast);
-            return unknown_var_error(f, st->paths[st->nfiles - 1],
-                                     stmt->value.string);
+            return unknown_var_error(f, st->paths[st->nfiles - 1], badname);
         }
 
         arr = ng_eval_array(f, ast, &eerr);
@@ -330,9 +386,70 @@ static int exec_command(ng_cli_state_t* st, char* line) {
             t = 0;
             z = 0;
         }
+        {
+            int e = 0, ne = 1;
+            /* Out-of-range ensemble degrades to missing (reference
+             * parity), and the reference says so out loud. */
+            if (grads_ng_file_selected_e(f, &e) == 0)
+                ne = grads_ng_file_ne(f);
+            if (ne < 1) ne = 1;
+            if (e < 0 || e >= ne)
+                printf("WARNING: request completely outside file limits "
+                       "(E = %d, file holds 1..%d); grid set to missing\n",
+                       e + 1, ne);
+        }
         rc = display_array(args, arr, t + 1, z + 1);
-        ng_array_free(arr);
+        /* Retain the display for `gxprint` (replaces any previous one). */
+        ng_array_free(st->last);
+        st->last = arr;
+        snprintf(st->last_label, sizeof(st->last_label), "%s", args);
         return rc;
+    }
+
+    /* `print` is obsolete upstream too: keep the reference guidance. */
+    if (cmd_word_eq(word, "print")) {
+        fprintf(stderr, "ERROR: The \"print\" command is no longer valid. Use \"gxprint\" instead.\n");
+        return NG_CMD_ERR;
+    }
+
+    /* M5 slice 1: shaded PPM of the last display. Only .ppm exists so
+     * far; PNG/vector backends arrive in later slices. */
+    if (cmd_word_eq(word, "gxprint")) {
+        char* name = args;
+        size_t nlen;
+        char full[1024];
+
+        while (*name && isspace((unsigned char)*name)) name++;
+        if (*name == '\0') {
+            fprintf(stderr, "ERROR: 'gxprint' needs an output path.\n\nUsage:\n    gxprint out.ppm\n");
+            return NG_CMD_ERR;
+        }
+        nlen = strlen(name);
+        if (nlen < 5 ||
+            (strcmp(name + nlen - 4, ".ppm") != 0 &&
+             strcmp(name + nlen - 4, ".PPM") != 0)) {
+            fprintf(stderr, "ERROR: only .ppm output is implemented (got \"%s\").\n", name);
+            return NG_CMD_ERR;
+        }
+        if (!st->last) {
+            fprintf(stderr, "ERROR: nothing displayed yet (use 'd' first).\n");
+            return NG_CMD_ERR;
+        }
+        if (name[0] == '/' || !st->output_dir ||
+            strcmp(st->output_dir, ".") == 0) {
+            snprintf(full, sizeof(full), "%s", name);
+        } else {
+            snprintf(full, sizeof(full), "%s/%s", st->output_dir, name);
+        }
+        if (ng_shade_write_ppm(full, st->last_label, st->last->data,
+                               st->last->nx, st->last->ny) != 0) {
+            fprintf(stderr, "ERROR: cannot write \"%s\".\n", full);
+            return NG_CMD_ERR;
+        }
+        printf("Wrote %s (%d x %d)\n", full,
+               st->last->nx * NG_SHADE_CELL,
+               st->last->ny * NG_SHADE_CELL);
+        return NG_CMD_OK;
     }
 
     if (cmd_word_eq(word, "set")) {
@@ -340,24 +457,192 @@ static int exec_command(ng_cli_state_t* st, char* line) {
         char* sub;
         char* num;
         char* end;
+        char* w2;
         long v;
         int t, z;
+        int x1, x2, y1, y2;
         char emsg[256];
 
         if (st->nfiles == 0) {
             fprintf(stderr, "ERROR: no files are open.\n\nUse:\n    open <file.ctl>\n");
             return NG_CMD_ERR;
         }
+        f = st->files[st->nfiles - 1];
         sub = args;
         while (*sub && isspace((unsigned char)*sub)) sub++;
         num = sub;
         while (*num && !isspace((unsigned char)*num)) num++;
         if (*num) *num++ = '\0';
         while (*num && isspace((unsigned char)*num)) num++;
+        /* World-coordinate spellings (`set lon/lat/lev`); `set x/y/z`
+         * take grid indices, exactly like GrADS. */
+        if (cmd_word_eq(sub, "lon") || cmd_word_eq(sub, "lat") ||
+            cmd_word_eq(sub, "lev")) {
+            char axis = cmd_word_eq(sub, "lon") ? 'x' :
+                        (cmd_word_eq(sub, "lat") ? 'y' : 'z');
+            const char* label = (axis == 'x') ? "LON" :
+                                ((axis == 'y') ? "LAT" : "LEV");
+            double w1, w2, s1, s2;
+            char* wstr;
+
+            wstr = num;
+            while (*wstr && !isspace((unsigned char)*wstr)) wstr++;
+            if (*wstr) *wstr++ = '\0';
+            while (*wstr && isspace((unsigned char)*wstr)) wstr++;
+            if (parse_world(num, &w1) != 0 ||
+                (*wstr != '\0' && parse_world(wstr, &w2) != 0)) {
+                fprintf(stderr, "ERROR: '%s' needs one or two world values.\n\nUsage:\n    set %s A [B]\n",
+                        sub, sub);
+                return NG_CMD_ERR;
+            }
+            if (*wstr == '\0') w2 = w1;
+            if (grads_ng_file_select_world(f, axis, w1, w2, &s1, &s2,
+                                           emsg, sizeof(emsg)) != 0) {
+                fprintf(stderr, "ERROR: %s\n", emsg);
+                return NG_CMD_ERR;
+            }
+            printf("%s set to %g %g\n", label, s1, s2);
+            return NG_CMD_OK;
+        }
+        if (cmd_word_eq(sub, "time")) {
+            char* wend = num;
+            char echo[64];
+
+            while (*wend && !isspace((unsigned char)*wend)) wend++;
+            if (*wend) *wend++ = '\0';
+            while (*wend && isspace((unsigned char)*wend)) wend++;
+            if (*num == '\0') {
+                fprintf(stderr, "ERROR: 'set time' needs a date/time value.\n\nUsage:\n    set time 00Z03JAN1987\n");
+                return NG_CMD_ERR;
+            }
+            /* Time ranges need the varying-T display path. */
+            if (*wend != '\0') {
+                fprintf(stderr, "ERROR: time ranges are not implemented yet (use 'set t N').\n");
+                return NG_CMD_ERR;
+            }
+            if (grads_ng_file_select_time(f, num, echo, sizeof(echo),
+                                          emsg, sizeof(emsg)) != 0) {
+                fprintf(stderr, "ERROR: %s\n", emsg);
+                return NG_CMD_ERR;
+            }
+            printf("Time values set: %s %s\n", echo, echo);
+            return NG_CMD_OK;
+        }
+        if (cmd_word_eq(sub, "e")) {
+            /* One numeric token, exactly like the reference: integers,
+             * `+2`, `2.0`, even negatives and huge values all stick (the
+             * echo is %g, so `set e 9999999999` prints `1e+10` there too).
+             * Bare, non-numeric, or trailing-junk input fails with the
+             * reference core text. The stored index truncates toward zero;
+             * reads outside 1..ne degrade to missing at display time. */
+            char* eend;
+            double ev;
+            long e1;
+
+            while (*num && isspace((unsigned char)*num)) num++;
+            if (*num == '\0') {
+                fprintf(stderr, "ERROR: SET error: Missing or invalid arguments for E option.\n\nUsage:\n    set e N\n");
+                return NG_CMD_ERR;
+            }
+            eend = num;
+            while (*eend && !isspace((unsigned char)*eend)) eend++;
+            if (*eend) {
+                *eend++ = '\0';
+                while (*eend && isspace((unsigned char)*eend)) eend++;
+                if (*eend != '\0') {
+                    fprintf(stderr, "ERROR: SET error: Missing or invalid arguments for E option.\n\nUsage:\n    set e N\n");
+                    return NG_CMD_ERR;
+                }
+            }
+            {
+                char* derr = NULL;
+                ev = strtod(num, &derr);
+                if (derr == num || !derr || *derr != '\0' || isnan(ev)) {
+                    fprintf(stderr, "ERROR: SET error: Missing or invalid arguments for E option.\n\nUsage:\n    set e N\n");
+                    return NG_CMD_ERR;
+                }
+            }
+            if (ev >= 0.0) e1 = (ev > 2147483647.0) ? 2147483647L : (long)ev;
+            else e1 = (ev < -2147483647.0) ? -2147483647L : (long)ev;
+            if (grads_ng_file_select_e(f, (int)(e1 - 1), emsg,
+                                       sizeof(emsg)) != 0) {
+                fprintf(stderr, "ERROR: %s\n", emsg);
+                return NG_CMD_ERR;
+            }
+            printf("E set to %g %g\n", ev, ev);
+            return NG_CMD_OK;
+        }
         if (!cmd_word_eq(sub, "t") && !cmd_word_eq(sub, "z") &&
-            !cmd_word_eq(sub, "lev")) {
-            fprintf(stderr, "ERROR: only 'set t N' and 'set z N' are supported in M3.\n\nUsage:\n    set t 2\n    set z 1\n");
+            !cmd_word_eq(sub, "lev") && !cmd_word_eq(sub, "x") &&
+            !cmd_word_eq(sub, "y")) {
+            fprintf(stderr, "ERROR: only 'set t', 'set z', 'set x' and 'set y' are supported.\n\nUsage:\n    set t 2\n    set z 1\n    set x 1 4\n    set y 2\n");
             return NG_CMD_ERR;
+        }
+        if (cmd_word_eq(sub, "x") || cmd_word_eq(sub, "y")) {
+            /* One index fixes the dimension; two select an ascending
+             * range window that later `d` output is clipped to.
+             * Fractional positions snap round-half-up, like the
+             * reference (`set x 1.5` sticks at grid 2). */
+            char axis = cmd_word_eq(sub, "x") ? 'x' : 'y';
+            const char* label = (axis == 'x') ? "LON" : "LAT";
+            double d1, d2, s1, s2;
+            long g1, g2;
+
+            w2 = num;
+            while (*w2 && !isspace((unsigned char)*w2)) w2++;
+            if (*w2) *w2++ = '\0';
+            while (*w2 && isspace((unsigned char)*w2)) w2++;
+            if (parse_world(num, &d1) != 0 ||
+                (*w2 != '\0' && parse_world(w2, &d2) != 0)) {
+                fprintf(stderr, "ERROR: '%s' needs one or two grid indices.\n\nUsage:\n    set %s A [B]\n",
+                        sub, sub);
+                return NG_CMD_ERR;
+            }
+            if (*w2 == '\0') d2 = d1;
+            g1 = snap_grid(d1);
+            g2 = snap_grid(d2);
+            if (g1 < 1 || g2 < 1) {
+                fprintf(stderr, "ERROR: '%s' needs one or two positive grid indices.\n\nUsage:\n    set %s A [B]\n",
+                        sub, sub);
+                return NG_CMD_ERR;
+            }
+            if (g2 < g1) {
+                fprintf(stderr, "ERROR: '%s' range must ascend (got %g %g).\n",
+                        sub, d1, d2);
+                return NG_CMD_ERR;
+            }
+            if (grads_ng_file_window(f, &x1, &x2, &y1, &y2) != 0) {
+                int nx, ny, nz, nt;
+                if (grads_ng_file_dims(f, &nx, &ny, &nz, &nt) != 0) {
+                    fprintf(stderr, "ERROR: cannot describe the open file.\n");
+                    return NG_CMD_ERR;
+                }
+                x1 = 0;
+                y1 = 0;
+                x2 = nx - 1;
+                y2 = ny - 1;
+            }
+            if (axis == 'x') {
+                x1 = (int)g1 - 1;
+                x2 = (int)g2 - 1;
+            } else {
+                y1 = (int)g1 - 1;
+                y2 = (int)g2 - 1;
+            }
+            if (grads_ng_file_select_xy(f, x1, x2, y1, y2, emsg,
+                                        sizeof(emsg)) != 0) {
+                fprintf(stderr, "ERROR: %s\n", emsg);
+                return NG_CMD_ERR;
+            }
+            /* Reference-style world echo; grid form if axis lookup fails. */
+            if (grads_ng_file_grid_to_world(f, axis, (int)g1, &s1) != 0 ||
+                grads_ng_file_grid_to_world(f, axis, (int)g2, &s2) != 0) {
+                if (g1 == g2) printf("Dimension %s set to %ld\n", sub, g1);
+                else printf("Dimension %s set to %ld..%ld\n", sub, g1, g2);
+            } else {
+                printf("%s set to %g %g\n", label, s1, s2);
+            }
+            return NG_CMD_OK;
         }
         if (*num == '\0' || num[strspn(num, "0123456789")] != '\0' ||
             (v = strtol(num, &end, 10), *end != '\0') || v < 1) {
@@ -365,7 +650,6 @@ static int exec_command(ng_cli_state_t* st, char* line) {
                     sub, sub);
             return NG_CMD_ERR;
         }
-        f = st->files[st->nfiles - 1];
         if (grads_ng_file_selected(f, &t, &z) != 0) {
             t = 0;
             z = 0;
@@ -376,18 +660,26 @@ static int exec_command(ng_cli_state_t* st, char* line) {
             fprintf(stderr, "ERROR: %s\n", emsg);
             return NG_CMD_ERR;
         }
-        printf("Dimension %s set to %ld\n", sub, v);
+        if (cmd_word_eq(sub, "t")) {
+            printf("Dimension %s set to %ld\n", sub, v);
+        } else {
+            double w;
+            if (grads_ng_file_grid_to_world(f, 'z', z + 1, &w) == 0)
+                printf("LEV set to %g %g\n", w, w);
+            else
+                printf("Dimension %s set to %ld\n", sub, v);
+        }
         return NG_CMD_OK;
     }
 
     for (i = 0; ng_future_cmds[i]; i++) {
         if (cmd_word_eq(word, ng_future_cmds[i])) {
-            fprintf(stderr, "ERROR: '%s' is not implemented yet.\n\nSupported: open, close, q file, q dims, set, d, help, quit.\n", word);
+            fprintf(stderr, "ERROR: '%s' is not implemented yet.\n\nSupported: open, close, q file, q dims, set, d, gxprint, help, quit.\n", word);
             return NG_CMD_ERR;
         }
     }
 
-    fprintf(stderr, "ERROR: unknown command \"%s\".\n\nSupported commands:\n    open, close, q file, q dims, set, d, help, quit\n", word);
+    fprintf(stderr, "ERROR: unknown command \"%s\".\n\nSupported commands:\n    open, close, q file, q dims, set, d, gxprint, help, quit\n", word);
     return NG_CMD_ERR;
 }
 
@@ -487,8 +779,7 @@ int main(int argc, char** argv) {
         }
     }
     
-    /* -o is accepted for CLI compatibility; output routing arrives in M5. */
-    (void)output_dir;
+    /* -o sets the directory for relative `gxprint` paths (must exist). */
 
     /* Initialize GrADS-NG */
     config.headless = batch_mode;
@@ -510,6 +801,7 @@ int main(int argc, char** argv) {
 
     memset(&st, 0, sizeof(st));
     st.session = session;
+    st.output_dir = output_dir;
 
     /* Evaluate an expression and print the numeric result */
     if (expr) {
@@ -628,10 +920,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    /* Close files opened via -c / REPL, then tear down the session. */
+    /* Close files opened via -c / REPL, drop the retained display,
+     * then tear down the session. */
     for (i = st.nfiles - 1; i >= 0; i--) {
         grads_ng_close(st.files[i]);
     }
+    ng_array_free(st.last);
     grads_ng_destroy(session);
 
     return exit_code;

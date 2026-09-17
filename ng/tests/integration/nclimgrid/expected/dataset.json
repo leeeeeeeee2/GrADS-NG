@@ -1,0 +1,41 @@
+{
+  "url": "https://www.ncei.noaa.gov/data/nclimgrid-daily/archive/1962/nclimgrid-daily_v1-0-0_complete_s19620701_e19620731_c20220829.tar.gz",
+  "product": "nClimGrid-Daily",
+  "version": "v1.0.0",
+  "period": [
+    "1962-07-01",
+    "1962-07-31"
+  ],
+  "release": "20220829",
+  "archive": {
+    "name": "nclimgrid-daily_v1-0-0_complete_s19620701_e19620731_c20220829.tar.gz",
+    "size": 157280362,
+    "sha256": "b3ba72145a98af6c3502684e1c8c1a6315b303ced37012ac07d7f67f79cd7077"
+  },
+  "payload_files": [
+    {
+      "name": "ncdd-196207-grd-scaled.nc",
+      "size": 58748754
+    },
+    {
+      "name": "ncdd-196207-version.txt",
+      "size": 124
+    },
+    {
+      "name": "prcp-196207-grd-scaled.nc",
+      "size": 9237189
+    },
+    {
+      "name": "tavg-196207-grd-scaled.nc",
+      "size": 18935892
+    },
+    {
+      "name": "tmax-196207-grd-scaled.nc",
+      "size": 19648247
+    },
+    {
+      "name": "tmin-196207-grd-scaled.nc",
+      "size": 21102894
+    }
+  ]
+}

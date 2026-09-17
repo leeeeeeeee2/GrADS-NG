@@ -1,0 +1,130 @@
+{
+  "ref_tmax_t01": {
+    "file": "ref_tmax_t01.gr",
+    "size": 3301840,
+    "n": 825460,
+    "nundef": 355702,
+    "min": -3.4501953125,
+    "max": 43.73046875,
+    "mean": 28.636926139446402
+  },
+  "ref_tmax_t31": {
+    "file": "ref_tmax_t31.gr",
+    "size": 3301840,
+    "n": 825460,
+    "nundef": 355702,
+    "min": 5.9404296875,
+    "max": 44.2001953125,
+    "mean": 28.85899245803491
+  },
+  "ref_tmax_julmean": {
+    "file": "ref_tmax_julmean.gr",
+    "size": 3301840,
+    "n": 825460,
+    "nundef": 355702,
+    "min": 2.3916330337524414,
+    "max": 44.58647155761719,
+    "mean": 29.152256519181087
+  },
+  "ref_tmax_julmin": {
+    "file": "ref_tmax_julmin.gr",
+    "size": 3301840,
+    "n": 825460,
+    "nundef": 355702,
+    "min": -8.6103515625,
+    "max": 40.3603515625,
+    "mean": 23.652181922992796
+  },
+  "ref_tmax_julmax": {
+    "file": "ref_tmax_julmax.gr",
+    "size": 3301840,
+    "n": 825460,
+    "nundef": 355702,
+    "min": 12.150390625,
+    "max": 46.490234375,
+    "mean": 33.2316017199115
+  },
+  "ref_prcp_t15": {
+    "file": "ref_prcp_t15.gr",
+    "size": 3301840,
+    "n": 825460,
+    "nundef": 355702,
+    "min": 0.0,
+    "max": 68.48046875,
+    "mean": 2.4019815143681695
+  },
+  "ref_prcp_julsum": {
+    "file": "ref_prcp_julsum.gr",
+    "size": 3301840,
+    "n": 825460,
+    "nundef": 355702,
+    "min": 0.0,
+    "max": 314.9609375,
+    "mean": 73.62949459108134
+  },
+  "ref_region_gp_tmax": {
+    "file": "ref_region_gp_tmax.gr",
+    "size": 234256,
+    "n": 58564,
+    "nundef": 0,
+    "min": 15.2099609375,
+    "max": 38.23046875,
+    "mean": 28.627389496560387,
+    "window": {
+      "request": {
+        "lon": [
+          -100.0,
+          -90.0
+        ],
+        "lat": [
+          35.0,
+          45.0
+        ]
+      },
+      "grid_0based": {
+        "x": [
+          592,
+          833
+        ],
+        "y": [
+          250,
+          491
+        ]
+      },
+      "rule": "GrADS snaps outward to enclose the requested range"
+    }
+  },
+  "ref_region_gp_trange": {
+    "file": "ref_region_gp_trange.gr",
+    "size": 234256,
+    "n": 58564,
+    "nundef": 0,
+    "min": 2.029296875,
+    "max": 19.130859375,
+    "mean": 10.159441570466711
+  },
+  "nc_tmax_t15": {
+    "source": "netcdf-direct",
+    "n": 825460,
+    "nundef": 355702,
+    "min": -4.98046875,
+    "max": 43.8896484375,
+    "mean": 27.803567641477102
+  },
+  "nc_trange_t15": {
+    "source": "netcdf-direct",
+    "n": 825460,
+    "nundef": 355702,
+    "min": 0.3896484375,
+    "max": 27.8994140625,
+    "mean": 13.411628001811572
+  },
+  "nc_tavgdiff_t15": {
+    "source": "netcdf-direct",
+    "n": 825460,
+    "nundef": 355702,
+    "min": -0.005859375,
+    "max": 0.005859375,
+    "mean": -1.9125539107370178e-07
+  }
+}

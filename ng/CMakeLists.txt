@@ -35,21 +35,24 @@ add_library(ngplatform STATIC src/platform/platform.c)
 target_include_directories(ngplatform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform)
 
 # Descriptor (.ctl) parser + binary grid reader as a reusable library.
-add_library(ngio STATIC src/io/ctl.c src/io/grid.c)
+add_library(ngio STATIC src/io/ctl.c src/io/grid.c src/time/ng_time.c)
 target_link_libraries(ngio PUBLIC ngplatform)
 target_include_directories(ngio PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/io)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/io
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/time)
 
 # Core runtime library: session, variables, array evaluator, OS compat.
 add_library(ngcore STATIC
     src/core/grads_ng.c
     src/backend/platform.c
     src/eval/array.c
+    src/render/shade.c
 )
 target_include_directories(ngcore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/eval
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/render
 )
 target_link_libraries(ngcore PUBLIC ngio ngparser ngplatform m)
 

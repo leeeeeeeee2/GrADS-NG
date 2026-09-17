@@ -40,6 +40,10 @@ typedef struct {
     /* Grid dimensions */
     int      nx, ny, nz, nt, ne;   /* x, y, z, time, ensemble */
 
+    /* Ensemble member names (ne entries of NG_CTL_NAMELEN), or NULL when
+     * the EDEF card carried no names. Allocated; freed by ng_ctl_free. */
+    char    (*ens_names)[NG_CTL_NAMELEN];
+
     /* Coordinate arrays (allocated, caller frees via ng_ctl_free) */
     double  *xvals;     /* longitude values or linear start/incr */
     double  *yvals;     /* latitude values */
@@ -49,6 +53,12 @@ typedef struct {
     int      xlinear;   /* 1 = xdef levels linear */
     int      ylinear;
     int      zlinear;
+
+    /* Absolute time axis: raw TDEF start/increment strings, validated at
+     * parse (the reference fails the open on a bad date, a zero/negative
+     * count, or an unknown unit). Interpreted by ng/src/time/. */
+    char     tdef_start[32];
+    char     tdef_incr[16];
 
     /* Missing value */
     double   undef;

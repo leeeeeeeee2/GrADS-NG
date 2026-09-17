@@ -1,0 +1,342 @@
+{
+  "dims": {
+    "time": {
+      "len": 31,
+      "unlimited": true
+    },
+    "lat": {
+      "len": 596,
+      "unlimited": false
+    },
+    "lon": {
+      "len": 1385,
+      "unlimited": false
+    }
+  },
+  "coords": {
+    "lon": {
+      "n": 1385,
+      "min": -124.6875,
+      "max": -67.02083587646484,
+      "ascending": true,
+      "units": "degrees_east"
+    },
+    "lat": {
+      "n": 596,
+      "min": 24.5625,
+      "max": 49.35416793823242,
+      "ascending": true,
+      "units": "degrees_north"
+    }
+  },
+  "time": {
+    "units": "days since 1800-01-01 00:00:00",
+    "calendar": "gregorian",
+    "values": [
+      59350,
+      59351,
+      59352,
+      59353,
+      59354,
+      59355,
+      59356,
+      59357,
+      59358,
+      59359,
+      59360,
+      59361,
+      59362,
+      59363,
+      59364,
+      59365,
+      59366,
+      59367,
+      59368,
+      59369,
+      59370,
+      59371,
+      59372,
+      59373,
+      59374,
+      59375,
+      59376,
+      59377,
+      59378,
+      59379,
+      59380
+    ],
+    "dates": [
+      "1962-07-01",
+      "1962-07-02",
+      "1962-07-03",
+      "1962-07-04",
+      "1962-07-05",
+      "1962-07-06",
+      "1962-07-07",
+      "1962-07-08",
+      "1962-07-09",
+      "1962-07-10",
+      "1962-07-11",
+      "1962-07-12",
+      "1962-07-13",
+      "1962-07-14",
+      "1962-07-15",
+      "1962-07-16",
+      "1962-07-17",
+      "1962-07-18",
+      "1962-07-19",
+      "1962-07-20",
+      "1962-07-21",
+      "1962-07-22",
+      "1962-07-23",
+      "1962-07-24",
+      "1962-07-25",
+      "1962-07-26",
+      "1962-07-27",
+      "1962-07-28",
+      "1962-07-29",
+      "1962-07-30",
+      "1962-07-31"
+    ]
+  },
+  "title": "nClimGrid, from GHCN-Daily",
+  "files": {
+    "tmax-196207-grd-scaled.nc": {
+      "dims": {
+        "time": 31,
+        "lat": 596,
+        "lon": 1385
+      },
+      "vars": {
+        "tmax": {
+          "dtype": "float32",
+          "dims": [
+            "time",
+            "lat",
+            "lon"
+          ],
+          "shape": [
+            31,
+            596,
+            1385
+          ],
+          "units": "degree_Celsius",
+          "long_name": "Temperature, daily maximum",
+          "standard_name": "air_temperature",
+          "fill": "np.float32(nan)",
+          "has_missing_value": false,
+          "has_scale": false,
+          "has_offset": false,
+          "valid": [
+            -100.0,
+            100.0
+          ]
+        }
+      }
+    },
+    "tmin-196207-grd-scaled.nc": {
+      "dims": {
+        "time": 31,
+        "lat": 596,
+        "lon": 1385
+      },
+      "vars": {
+        "tmin": {
+          "dtype": "float32",
+          "dims": [
+            "time",
+            "lat",
+            "lon"
+          ],
+          "shape": [
+            31,
+            596,
+            1385
+          ],
+          "units": "degree_Celsius",
+          "long_name": "Temperature, daily minimum",
+          "standard_name": "air_temperature",
+          "fill": "np.float32(nan)",
+          "has_missing_value": false,
+          "has_scale": false,
+          "has_offset": false,
+          "valid": [
+            -100.0,
+            100.0
+          ]
+        }
+      }
+    },
+    "tavg-196207-grd-scaled.nc": {
+      "dims": {
+        "time": 31,
+        "lat": 596,
+        "lon": 1385
+      },
+      "vars": {
+        "tavg": {
+          "dtype": "float32",
+          "dims": [
+            "time",
+            "lat",
+            "lon"
+          ],
+          "shape": [
+            31,
+            596,
+            1385
+          ],
+          "units": "degree_Celsius",
+          "long_name": "Temperature, daily average",
+          "standard_name": "air_temperature",
+          "fill": "np.float32(nan)",
+          "has_missing_value": false,
+          "has_scale": false,
+          "has_offset": false,
+          "valid": [
+            -100.0,
+            100.0
+          ]
+        }
+      }
+    },
+    "prcp-196207-grd-scaled.nc": {
+      "dims": {
+        "time": 31,
+        "lat": 596,
+        "lon": 1385
+      },
+      "vars": {
+        "prcp": {
+          "dtype": "float32",
+          "dims": [
+            "time",
+            "lat",
+            "lon"
+          ],
+          "shape": [
+            31,
+            596,
+            1385
+          ],
+          "units": "millimeter",
+          "long_name": "Precipitation, daily total",
+          "standard_name": "precipitation_amount",
+          "fill": "np.float32(nan)",
+          "has_missing_value": false,
+          "has_scale": false,
+          "has_offset": false,
+          "valid": [
+            0.0,
+            2000.0
+          ]
+        }
+      }
+    },
+    "ncdd-196207-grd-scaled.nc": {
+      "dims": {
+        "time": 31,
+        "lat": 596,
+        "lon": 1385
+      },
+      "vars": {
+        "tmax": {
+          "dtype": "float64",
+          "dims": [
+            "time",
+            "lat",
+            "lon"
+          ],
+          "shape": [
+            31,
+            596,
+            1385
+          ],
+          "units": "degree_Celsius",
+          "long_name": "Temperature, daily maximum",
+          "standard_name": "air_temperature",
+          "fill": "np.float64(nan)",
+          "has_missing_value": false,
+          "has_scale": false,
+          "has_offset": false,
+          "valid": [
+            -100.0,
+            100.0
+          ]
+        },
+        "tmin": {
+          "dtype": "float64",
+          "dims": [
+            "time",
+            "lat",
+            "lon"
+          ],
+          "shape": [
+            31,
+            596,
+            1385
+          ],
+          "units": "degree_Celsius",
+          "long_name": "Temperature, daily minimum",
+          "standard_name": "air_temperature",
+          "fill": "np.float64(nan)",
+          "has_missing_value": false,
+          "has_scale": false,
+          "has_offset": false,
+          "valid": [
+            -100.0,
+            100.0
+          ]
+        },
+        "prcp": {
+          "dtype": "float64",
+          "dims": [
+            "time",
+            "lat",
+            "lon"
+          ],
+          "shape": [
+            31,
+            596,
+            1385
+          ],
+          "units": "millimeter",
+          "long_name": "Precipitation, daily total",
+          "standard_name": "precipitation_amount",
+          "fill": "np.float64(nan)",
+          "has_missing_value": false,
+          "has_scale": false,
+          "has_offset": false,
+          "valid": [
+            0.0,
+            2000.0
+          ]
+        },
+        "tavg": {
+          "dtype": "float64",
+          "dims": [
+            "time",
+            "lat",
+            "lon"
+          ],
+          "shape": [
+            31,
+            596,
+            1385
+          ],
+          "units": "degree_Celsius",
+          "long_name": "Temperature, daily average",
+          "standard_name": "air_temperature",
+          "fill": "np.float64(nan)",
+          "has_missing_value": false,
+          "has_scale": false,
+          "has_offset": false,
+          "valid": [
+            -100.0,
+            100.0
+          ]
+        }
+      }
+    }
+  }
+}

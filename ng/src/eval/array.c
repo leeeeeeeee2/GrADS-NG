@@ -44,6 +44,7 @@ static ng_array_t *array_new(int nx, int ny) {
     }
     a->nx = nx;
     a->ny = ny;
+    a->e_bad = -1;
     return a;
 }
 
@@ -58,7 +59,10 @@ static ng_array_t *array_const(int nx, int ny, double v) {
 
 typedef struct {
     grads_ng_file_t *file;
-    int nx, ny, nt, nz, t, z;
+    int nx, ny;   /* selected X/Y window size (`set x` / `set y`) */
+    int x0, y0;   /* window origin, 0-based, in full-grid coordinates */
+    int nt, nz, t, z;
+    int e_bad;    /* 1-based offending ensemble, -1 when all reads in range */
     const char **err_out;
 } eval_ctx_t;
 
@@ -79,7 +83,7 @@ static int red_name_eq(const char *a, const char *b) {
 
 static int is_reduce(const char *name) {
     return name && (red_name_eq(name, "max") || red_name_eq(name, "min") ||
-                    red_name_eq(name, "ave"));
+                    red_name_eq(name, "ave") || red_name_eq(name, "sum"));
 }
 
 /* Resolve one range bound (EQUAL-node IDENT = constant) to a 1-based index.
@@ -132,9 +136,9 @@ static int dim_bound(eval_ctx_t *ctx, const grads_ng_ast_node_t *arg,
     return 0;
 }
 
-/* max/min/ave(expr, d1, d2) over a t/z index range (uniform weights for
- * ave; all-NaN yields NaN). GrADS semantics per the 2.2.1 function reference
- * bundled for M7 work. */
+/* max/min/ave/sum(expr, d1, d2) over a t/z index range (uniform weights
+ * for ave; sum skips missing like ave; all-NaN yields NaN). GrADS semantics
+ * per the 2.2.1 function reference bundled for M7 work. */
 static ng_array_t *reduce(eval_ctx_t *ctx, const char *fname,
                           const grads_ng_ast_node_t *expr,
                           const grads_ng_ast_node_t *d1,
@@ -146,6 +150,7 @@ static ng_array_t *reduce(eval_ctx_t *ctx, const char *fname,
     double *sum = NULL;
     long *cnt = NULL;
     int is_ave = red_name_eq(fname, "ave");
+    int is_sum = red_name_eq(fname, "sum");
 
     if (dim_bound(ctx, d1, &dim1, &a) != 0) return NULL;
     if (dim_bound(ctx, d2, &dim2, &b) != 0) return NULL;
@@ -159,7 +164,7 @@ static ng_array_t *reduce(eval_ctx_t *ctx, const char *fname,
         return NULL;
     }
     acc = array_new(ctx->nx, ctx->ny);
-    if (is_ave) {
+    if (is_ave || is_sum) {
         len = (long)ctx->nx * ctx->ny;
         sum = malloc((size_t)len * sizeof(*sum));
         cnt = malloc((size_t)len * sizeof(*cnt));
@@ -205,9 +210,9 @@ static ng_array_t *reduce(eval_ctx_t *ctx, const char *fname,
             return NULL;
         }
         len = (long)ctx->nx * ctx->ny;
-        if (n == 0 && !is_ave) {
+        if (n == 0 && !is_ave && !is_sum) {
             for (i = 0; i < len; i++) acc->data[i] = slab->data[i];
-        } else if (!is_ave) {
+        } else if (!is_ave && !is_sum) {
             for (i = 0; i < len; i++) {
                 double cur = acc->data[i], v = slab->data[i];
                 if (isnan(v)) continue;
@@ -234,20 +239,27 @@ static ng_array_t *reduce(eval_ctx_t *ctx, const char *fname,
     }
     ctx->t = st;
     ctx->z = sz;
-    if (is_ave) {
-        for (i = 0; i < len; i++)
-            acc->data[i] = (cnt[i] > 0) ? sum[i] / (double)cnt[i] : NAN;
+    if (is_ave || is_sum) {
+        for (i = 0; i < len; i++) {
+            if (cnt[i] == 0) acc->data[i] = NAN;
+            else if (is_sum) acc->data[i] = sum[i];
+            else acc->data[i] = sum[i] / (double)cnt[i];
+        }
         free(sum);
         free(cnt);
     }
     return acc;
 }
 
-/* Load a variable slice, converting UNDEF to NaN. */
+/* Load the selected (t, z) slice clipped to the X/Y window, converting
+ * UNDEF to NaN. The grid reader yields full slices, so one full-size
+ * buffer is read and the window copied out. */
 static ng_array_t *load_var(eval_ctx_t *ctx, const char *name) {
     grads_ng_var_t *var;
     ng_array_t *a;
+    double *full = NULL;
     char emsg[256];
+    int fnx, fny, fnz, fnt, ry;
     long n, i;
     float undef_f;
 
@@ -256,17 +268,31 @@ static ng_array_t *load_var(eval_ctx_t *ctx, const char *name) {
         *ctx->err_out = fail("variable \"%s\" is not defined", name);
         return NULL;
     }
+    if (grads_ng_file_dims(ctx->file, &fnx, &fny, &fnz, &fnt) != 0) {
+        *ctx->err_out = fail("cannot describe the open file");
+        return NULL;
+    }
+    full = malloc((size_t)fnx * (size_t)fny * sizeof(*full));
     a = array_new(ctx->nx, ctx->ny);
-    if (!a) {
+    if (!full || !a) {
+        free(full);
+        ng_array_free(a);
         *ctx->err_out = fail("out of memory");
         return NULL;
     }
-    if (grads_ng_var_slice(var, ctx->t, ctx->z, a->data, emsg,
+    if (grads_ng_var_slice(var, ctx->t, ctx->z, full, emsg,
                            sizeof(emsg)) != 0) {
         *ctx->err_out = fail("%s", emsg);
+        free(full);
         ng_array_free(a);
         return NULL;
     }
+    for (ry = 0; ry < ctx->ny; ry++) {
+        memcpy(a->data + (long)ry * ctx->nx,
+               full + (long)(ctx->y0 + ry) * fnx + ctx->x0,
+               (size_t)ctx->nx * sizeof(*a->data));
+    }
+    free(full);
     undef_f = (float)grads_ng_var_undef(var);
     n = (long)ctx->nx * ctx->ny;
     for (i = 0; i < n; i++) {
@@ -404,13 +430,14 @@ static ng_array_t *eval_node(eval_ctx_t *ctx,
             return o;
 
         case AST_CALL_EXPR: {
-            /* Elementwise N-argument math calls (max/min/pow + unary set).
+            /* Elementwise N-argument math calls (pow + unary set).
+             * max/min/ave/sum are dimension reductions (handled above).
              * Unknown names and wrong arity are programming errors (hard
              * fail); domain errors on real data become missing. */
             const char *fname = node->value.call.name;
             int argc = node->value.call.argc;
             int arity;
-            /* Dimension reductions own max/min/ave (GrADS reference). */
+            /* Dimension reductions own max/min/ave/sum (GrADS reference). */
             if (is_reduce(fname)) {
                 if (argc != 3) {
                     *ctx->err_out =
@@ -503,11 +530,23 @@ ng_array_t *ng_eval_array(grads_ng_file_t *file,
         return NULL;
     }
     ctx.file = file;
-    ctx.nx = nx;
-    ctx.ny = ny;
     ctx.nt = nt;
     ctx.nz = nz;
     ctx.err_out = err_out;
+    /* Evaluate over the selected X/Y window (full grid by default). */
+    {
+        int x1, x2, y1, y2;
+        if (grads_ng_file_window(file, &x1, &x2, &y1, &y2) != 0) {
+            x1 = 0;
+            y1 = 0;
+            x2 = nx - 1;
+            y2 = ny - 1;
+        }
+        ctx.x0 = x1;
+        ctx.y0 = y1;
+        ctx.nx = x2 - x1 + 1;
+        ctx.ny = y2 - y1 + 1;
+    }
     if (grads_ng_file_selected(file, &ctx.t, &ctx.z) != 0) {
         ctx.t = 0;
         ctx.z = 0;

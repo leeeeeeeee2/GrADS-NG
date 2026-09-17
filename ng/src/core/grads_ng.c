@@ -8,11 +8,13 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <math.h>
 
 #include "grads_ng.h"
 #include "backend/platform.h"
 #include "../io/ctl.h"
 #include "../io/grid.h"
+#include "ng_time.h"
 
 /* Session structure */
 struct grads_ng_session {
@@ -34,7 +36,14 @@ struct grads_ng_file {
     int vnum;
     grads_ng_var_t* vars;   /* owned variable handles */
     int sel_t;              /* selected time step, 0-based (`set t`) */
+    int sel_e;              /* selected ensemble, 0-based (`set e`) */
+    ng_time_t tax_start;    /* TDEF start (absolute time axis) */
+    int tax_count;          /* TDEF increment count (>= 1) */
+    ng_time_unit_t tax_unit;
+    int tax_ok;             /* time axis parsed */
     int sel_z;              /* selected level index, 0-based (`set z`) */
+    int sel_x1, sel_x2;     /* X window, 0-based inclusive (`set x`) */
+    int sel_y1, sel_y2;     /* Y window, 0-based inclusive (`set y`) */
 };
 
 /* Variable structure (borrowed from the file; valid until close) */
@@ -165,8 +174,31 @@ grads_ng_file_t* grads_ng_open(grads_ng_session_t* session, const char* ctl_path
     file->ny = desc->ny;
     file->nz = desc->nz;
     file->nt = desc->nt;
-    file->ne = desc->ne;
+    /* A missing EDEF card means a single ensemble (reference `q dims`
+     * still reports the E axis on such files). sel_* default to step 1. */
+    file->ne = desc->ne > 0 ? desc->ne : 1;
+    file->sel_e = 0;
     file->vnum = desc->nvars;
+    /* Absolute time axis (validated again defensively; the descriptor
+     * parser already rejected malformed TDEF cards). */
+    file->tax_ok =
+        (ng_time_parse(desc->tdef_start, &file->tax_start) == 0 &&
+         ng_incr_parse(desc->tdef_incr, &file->tax_count,
+                       &file->tax_unit) == 0);
+    if (!file->tax_ok) {
+        snprintf(session->last_err, sizeof(session->last_err),
+                 "cannot build the file time axis");
+        ng_ctl_free(desc);
+        free(file->vars);
+        free(file);
+        return NULL;
+    }
+    /* X/Y default to the full varying grid (reference `q dims` shows X/Y
+     * varying over 1..nx / 1..ny on a fresh open). */
+    file->sel_x1 = 0;
+    file->sel_x2 = desc->nx - 1;
+    file->sel_y1 = 0;
+    file->sel_y2 = desc->ny - 1;
     for (i = 0; i < desc->nvars; i++) {
         file->vars[i].file = file;
         file->vars[i].index = i;
@@ -239,6 +271,295 @@ int grads_ng_file_selected(const grads_ng_file_t* file, int* t, int* z) {
     *t = file->sel_t;
     *z = file->sel_z;
     return 0;
+}
+
+/* Ensemble selection (`set e`), 0-based. The reference never range-checks
+ * (any integer sticks, even 0 or past the last member), so neither does
+ * this: out-of-range reads degrade to missing data at read time. */
+int grads_ng_file_select_e(grads_ng_file_t* file, int e,
+                           char* err, size_t errlen) {
+    (void)err;
+    (void)errlen;
+    if (!file) return -1;
+    file->sel_e = e;
+    return 0;
+}
+
+int grads_ng_file_selected_e(const grads_ng_file_t* file, int* e) {
+    if (!file || !e) return -1;
+    *e = file->sel_e;
+    return 0;
+}
+
+int grads_ng_file_ne(const grads_ng_file_t* file) {
+    if (!file) return -1;
+    return file->ne;
+}
+
+/* Member name for 1-based member m (NULL when the descriptor named no
+ * members, or m is outside 1..ne — the reference prints (null) there). */
+const char* grads_ng_file_ens_name(const grads_ng_file_t* file, int m) {
+    if (!file || !file->desc || !file->desc->ens_names) return NULL;
+    if (m < 1 || m > file->ne) return NULL;
+    return file->desc->ens_names[m - 1];
+}
+
+/* X/Y window selection (`set x` / `set y`), 0-based inclusive, validated
+ * against the full grid. Reference GrADS never range-checks `set x/y`
+ * (it maps arithmetically, even outside the grid); NG rejects
+ * out-of-range bounds instead, since reading outside the stored slice
+ * cannot produce meaningful data. */
+int grads_ng_file_select_xy(grads_ng_file_t* file, int x1, int x2,
+                            int y1, int y2, char* err, size_t errlen) {
+#define XY_FAIL(fmt, ...) do { \
+        if (err && errlen > 0) snprintf(err, errlen, fmt, ##__VA_ARGS__); \
+        return -1; \
+    } while (0)
+
+    if (!file) XY_FAIL("no file is open");
+    if (x1 < 0 || x2 < 0 || x1 >= file->nx || x2 >= file->nx)
+        XY_FAIL("x=%d..%d out of range (file holds 1..%d)", x1 + 1, x2 + 1,
+                file->nx);
+    if (y1 < 0 || y2 < 0 || y1 >= file->ny || y2 >= file->ny)
+        XY_FAIL("y=%d..%d out of range (file holds 1..%d)", y1 + 1, y2 + 1,
+                file->ny);
+    if (x1 > x2) XY_FAIL("x range must ascend (got %d %d)", x1 + 1, x2 + 1);
+    if (y1 > y2) XY_FAIL("y range must ascend (got %d %d)", y1 + 1, y2 + 1);
+    file->sel_x1 = x1;
+    file->sel_x2 = x2;
+    file->sel_y1 = y1;
+    file->sel_y2 = y2;
+    return 0;
+#undef XY_FAIL
+}
+
+int grads_ng_file_window(const grads_ng_file_t* file, int* x1, int* x2,
+                         int* y1, int* y2) {
+    if (!file || !x1 || !x2 || !y1 || !y2) return -1;
+    *x1 = file->sel_x1;
+    *x2 = file->sel_x2;
+    *y1 = file->sel_y1;
+    *y2 = file->sel_y2;
+    return 0;
+}
+
+/* ---- World coordinates (coordinate milestone, slice 1: lon/lat/lev) ----
+ *
+ * Reference rules, probed against 2.2.1.oga.1 (see NG_BASELINE.md):
+ * - `set x/y` take grid indices; `set lon/lat/lev` take world values.
+ * - LINEAR axis: grid = round-half-up((w - start) / incr) + 1, never
+ *   validated, never wrapped (`set lon 400` sticks at grid 5 of 4).
+ * - LEVELS axis: nearest table entry; the one observed tie (750 between
+ *   1000/500) resolved to the higher index.
+ * NG keeps the conversion but validates the converted grid strictly
+ * in-file, consistent with every other NG bound. */
+
+/* Axis backing store from the descriptor. LINEAR: vals = [start, incr];
+ * LEVELS: vals = full value table of length n. */
+static void axis_backing(const grads_ng_file_t* file, char axis,
+                         const double** vals, int* n, int* linear) {
+    const ng_ctl_t* d = (file) ? file->desc : NULL;
+
+    if (vals) *vals = NULL;
+    if (n) *n = 0;
+    if (linear) *linear = 0;
+    if (!d) return;
+    if (axis == 'x') {
+        if (vals) *vals = d->xvals;
+        if (n) *n = file->nx;
+        if (linear) *linear = d->xlinear;
+    } else if (axis == 'y') {
+        if (vals) *vals = d->yvals;
+        if (n) *n = file->ny;
+        if (linear) *linear = d->ylinear;
+    } else if (axis == 'z') {
+        if (vals) *vals = d->zvals;
+        if (n) *n = file->nz;
+        if (linear) *linear = d->zlinear;
+    }
+}
+
+/* 1-based grid index for a world value (reference rounding, unvalidated).
+ * Returns 0 when the axis is missing or the value is not convertible. */
+static int world_to_grid(const double* vals, int n, int linear, double w) {
+    if (!vals || n <= 0 || !isfinite(w)) return 0;
+    if (linear) {
+        double g;
+        if (vals[1] == 0.0) return 0;
+        g = (w - vals[0]) / vals[1] + 1.0;
+        if (!isfinite(g)) return 0;
+        /* Clamp before the int cast (huge inputs fail validation below). */
+        if (g > 2147483647.0 || g < -2147483647.0) return 2147483647;
+        return (int)floor(g + 0.5);
+    } else {
+        int best = 0, i;
+        double bd = fabs(w - vals[0]);
+        for (i = 1; i < n; i++) {
+            double d = fabs(w - vals[i]);
+            if (d <= bd) {
+                bd = d;
+                best = i;  /* last wins ties, as observed */
+            }
+        }
+        return best + 1;
+    }
+}
+
+/* World value at a 1-based grid index. Returns 0 with *w set, -1 when the
+ * axis is missing or the index is outside 1..n. */
+int grads_ng_file_grid_to_world(const grads_ng_file_t* file, char axis,
+                                int grid, double* w) {
+    const double* vals;
+    int n, linear;
+
+    if (!w) return -1;
+    axis_backing(file, axis, &vals, &n, &linear);
+    if (!vals || grid < 1 || grid > n) return -1;
+    *w = linear ? vals[0] + (grid - 1) * vals[1] : vals[grid - 1];
+    return 0;
+}
+
+/* World-coordinate selection (`set lon/lat/lev`): convert both bounds with
+ * reference rounding, require ascending converted grids, then store
+ * strictly in-file. `lev` takes a single value (level ranges need the
+ * varying-z display path). Snapped world values go to s1/s2 (may be NULL)
+ * for the reference-style echo. */
+int grads_ng_file_select_world(grads_ng_file_t* file, char axis,
+                               double w1, double w2,
+                               double* s1, double* s2,
+                               char* err, size_t errlen) {
+#define W_FAIL(fmt, ...) do { \
+        if (err && errlen > 0) snprintf(err, errlen, fmt, ##__VA_ARGS__); \
+        return -1; \
+    } while (0)
+    const double* vals;
+    const char* name;
+    int n, linear, g1, g2, i;
+    double lo, hi, t;
+
+    if (!file) W_FAIL("no file is open");
+    if (axis == 'x') name = "lon";
+    else if (axis == 'y') name = "lat";
+    else if (axis == 'z') name = "lev";
+    else W_FAIL("unknown dimension '%c'", axis);
+    axis_backing(file, axis, &vals, &n, &linear);
+    if (!vals || n <= 0) W_FAIL("no %s axis is defined", name);
+    if (axis == 'z' && w1 != w2)
+        W_FAIL("level ranges are not implemented yet (use 'set z N')");
+    g1 = world_to_grid(vals, n, linear, w1);
+    g2 = world_to_grid(vals, n, linear, w2);
+    if (g1 < 1 || g1 > n || g2 < 1 || g2 > n) {
+        if (linear) {
+            lo = vals[0];
+            hi = vals[0] + (n - 1) * vals[1];
+            if (hi < lo) {
+                t = lo;
+                lo = hi;
+                hi = t;
+            }
+        } else {
+            lo = hi = vals[0];
+            for (i = 1; i < n; i++) {
+                if (vals[i] < lo) lo = vals[i];
+                if (vals[i] > hi) hi = vals[i];
+            }
+        }
+        W_FAIL("%s=%g out of range (file holds %g to %g)", name,
+               (g1 < 1) ? w1 : w2, lo, hi);
+    }
+    if (g1 > g2)
+        W_FAIL("'%s' range must ascend (got %g %g)", name, w1, w2);
+    if (axis == 'x') {
+        file->sel_x1 = g1 - 1;
+        file->sel_x2 = g2 - 1;
+    } else if (axis == 'y') {
+        file->sel_y1 = g1 - 1;
+        file->sel_y2 = g2 - 1;
+    } else {
+        file->sel_z = g1 - 1;
+    }
+    if (s1 && grads_ng_file_grid_to_world(file, axis, g1, s1) != 0)
+        W_FAIL("cannot describe the open file");
+    if (s2 && grads_ng_file_grid_to_world(file, axis, g2, s2) != 0)
+        W_FAIL("cannot describe the open file");
+    return 0;
+#undef W_FAIL
+}
+
+/* ---- Absolute time (`set time`) ----
+ *
+ * The axis steps from the TDEF start by the TDEF increment (see
+ * ng/src/time/ for the calendar rules). `set time` snaps to the nearest
+ * step, ties up, exactly like the reference; out-of-window targets fail
+ * strictly (the reference clamps and proceeds). */
+
+/* Canonical "00Z03JAN1987" rendering of step k (0-based). */
+int grads_ng_file_time_at(const grads_ng_file_t* file, int k,
+                          char* buf, size_t len) {
+    ng_time_t t;
+    if (!file || !file->tax_ok || !buf || len == 0) return -1;
+    if (k < 0 || k >= file->nt) return -1;
+    t = ng_time_step(file->tax_start, file->tax_count, file->tax_unit, k);
+    ng_time_format(t, buf, len);
+    return 0;
+}
+
+/* Select a time by GrADS datetime string. Two-valued ranges need the
+ * varying-T display path and are rejected honestly. echo_out receives the
+ * reference-style "1987:1:3:0" stamp of the snapped step. */
+int grads_ng_file_select_time(grads_ng_file_t* file, const char* s,
+                              char* echo_out, size_t echo_len,
+                              char* err, size_t errlen) {
+#define T_FAIL(fmt, ...) do { \
+        if (err && errlen > 0) snprintf(err, errlen, fmt, ##__VA_ARGS__); \
+        return -1; \
+    } while (0)
+    ng_time_t target, step;
+    long long tgt, s0, sN, gap;
+    int k;
+
+    if (!file) T_FAIL("no file is open");
+    if (!file->tax_ok) T_FAIL("no time axis is defined");
+    if (!s || ng_time_parse(s, &target) != 0)
+        T_FAIL("Syntax Error: Invalid Date/Time value \"%s\".",
+               s ? s : "");
+    k = ng_time_nearest(file->tax_start, file->tax_count, file->tax_unit,
+                        file->nt, target);
+    tgt = ng_time_absmin(target);
+    step = ng_time_step(file->tax_start, file->tax_count, file->tax_unit, k);
+    if (file->nt > 1) {
+        /* Strict half-step window around the axis ends. */
+        s0 = ng_time_absmin(file->tax_start);
+        sN = ng_time_absmin(ng_time_step(file->tax_start, file->tax_count,
+                                         file->tax_unit, file->nt - 1));
+        if (k == 0) {
+            gap = ng_time_absmin(ng_time_step(file->tax_start,
+                                              file->tax_count,
+                                              file->tax_unit, 1)) - s0;
+            if (2 * (s0 - tgt) > gap) k = -1;
+        }
+        if (k == file->nt - 1 && k >= 0) {
+            gap = sN - ng_time_absmin(ng_time_step(file->tax_start,
+                                                   file->tax_count,
+                                                   file->tax_unit,
+                                                   file->nt - 2));
+            if (2 * (tgt - sN) > gap) k = -1;
+        }
+    }
+    if (k < 0) {
+        char lo[32], hi[32];
+        ng_time_format(file->tax_start, lo, sizeof(lo));
+        ng_time_format(ng_time_step(file->tax_start, file->tax_count,
+                                    file->tax_unit, file->nt - 1),
+                       hi, sizeof(hi));
+        T_FAIL("time %s out of range (file holds %s to %s)", s, lo, hi);
+    }
+    file->sel_t = k;
+    if (echo_out && echo_len > 0)
+        snprintf(echo_out, echo_len, "%lld:%d:%d:%d", step.yr, step.mo,
+                 step.dy, step.hr);
+    return 0;
+#undef T_FAIL
 }
 
 /* Close a GrADS file */
@@ -343,7 +664,11 @@ const char* grads_ng_file_varname(const grads_ng_file_t* file, int index) {
     return file->desc->vars[index].name;
 }
 
-/* Read one slice, opening the data file lazily on first use. */
+/* Read one slice at the selected ensemble, opening the data file lazily
+ * on first use. An out-of-range ensemble degrades the whole slice to
+ * missing (reference parity: the reference warns "request completely
+ * outside file limits" and contours all-missing); the CLI echoes the
+ * warning, so this layer stays quiet. */
 int grads_ng_var_slice(grads_ng_var_t* var, int t, int z, double* out,
                        char* err, size_t errlen) {
     grads_ng_file_t* file;
@@ -358,6 +683,11 @@ int grads_ng_var_slice(grads_ng_var_t* var, int t, int z, double* out,
         VAR_FAIL("cannot read from an empty variable reference");
     file = var->file;
 
+    if (file->sel_e < 0 || file->sel_e >= file->ne) {
+        long n = (long)file->nx * file->ny, k;
+        for (k = 0; k < n; k++) out[k] = NAN;
+        return 0;
+    }
     if (!file->grid) {
         file->grid = ng_grid_open(file->desc, &gerr);
         if (!file->grid)
@@ -365,7 +695,8 @@ int grads_ng_var_slice(grads_ng_var_t* var, int t, int z, double* out,
                      file->ctl_path[0] ? file->ctl_path : "(open file)",
                      gerr ? gerr : "unknown error");
     }
-    if (ng_grid_read_slice(file->grid, var->index, t, z, out, &gerr) != 0)
+    if (ng_grid_read_slice(file->grid, var->index, t, z, file->sel_e, out,
+                           &gerr) != 0)
         VAR_FAIL("%s", gerr ? gerr : "read failed");
     return 0;
 #undef VAR_FAIL

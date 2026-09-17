@@ -1,0 +1,13 @@
+DSET ^ens.dat
+TITLE Ensemble M3 test descriptor
+UNDEF -9.99e33
+XDEF 2 LINEAR 0 1
+YDEF 2 LINEAR -45 90
+ZDEF 1 LINEAR 1 1
+TDEF 2 LINEAR 00Z01JAN2000 1DY
+EDEF 2 NAMES
+memA
+memB
+VARS 1
+hgt 0 99 Geopotential Heights
+ENDVARS

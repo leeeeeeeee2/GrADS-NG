@@ -133,6 +133,7 @@ int main(void) {
     /* max/min/ave are dimension reductions, not scalar functions. */
     check_error("max(3,7)", "reduces over a dimension range");
     check_error("ave(tsfc,t=1,t=2)", "reduces over a dimension range");
+    check_error("sum(hgt,t=1,t=2)", "reduces over a dimension range");
     check_error("sqrt(-1)", "negative");
     check_error("sin(1", "Expected )");
 

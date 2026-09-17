@@ -74,6 +74,44 @@ int grads_ng_file_type(const grads_ng_file_t* file);
 int grads_ng_file_select(grads_ng_file_t* file, int t, int z,
                          char* err, size_t errlen);
 int grads_ng_file_selected(const grads_ng_file_t* file, int* t, int* z);
+/* Ensemble selection (`set e`), 0-based and deliberately UNVALIDATED like
+ * the reference (any integer sticks, even 0 or past the last member).
+ * select_e stores it (NULL file fails); selected_e reports it; ne reports
+ * the member count (1 when the descriptor has no EDEF); ens_name names
+ * 1-based member m, or NULL when unnamed or out of range. */
+int grads_ng_file_select_e(grads_ng_file_t* file, int e,
+                           char* err, size_t errlen);
+int grads_ng_file_selected_e(const grads_ng_file_t* file, int* e);
+int grads_ng_file_ne(const grads_ng_file_t* file);
+const char* grads_ng_file_ens_name(const grads_ng_file_t* file, int m);
+/* X/Y window selection (`set x` / `set y`), 0-based inclusive, validated
+ * against the full grid; defaults to the whole grid on open. select_xy
+ * returns 0 or -1 with a message; window reports current values. */
+int grads_ng_file_select_xy(grads_ng_file_t* file, int x1, int x2,
+                            int y1, int y2, char* err, size_t errlen);
+int grads_ng_file_window(const grads_ng_file_t* file, int* x1, int* x2,
+                         int* y1, int* y2);
+/* World-coordinate selection (`set lon/lat/lev`): reference rounding
+ * (LINEAR inverse round-half-up; LEVELS nearest, ties to higher index),
+ * ascending converted grids, strict in-file storage. `lev` takes a single
+ * value. Snapped worlds go to s1/s2 (may be NULL) for the echo. Returns 0
+ * or -1 with a message. grid_to_world inverts one 1-based index. */
+int grads_ng_file_select_world(grads_ng_file_t* file, char axis,
+                               double w1, double w2,
+                               double* s1, double* s2,
+                               char* err, size_t errlen);
+int grads_ng_file_grid_to_world(const grads_ng_file_t* file, char axis,
+                                int grid, double* w);
+/* Absolute time axis (`set time`, `q dims` Time). time_at renders step k
+ * (0-based) canonically ("00Z03JAN1987"). select_time snaps a GrADS
+ * datetime string to the nearest step (ties up), stores it, and reports
+ * the reference-style "1987:1:3:0" stamp in echo_out (may be NULL).
+ * Time ranges need the varying-T display path and fail honestly. */
+int grads_ng_file_time_at(const grads_ng_file_t* file, int k,
+                          char* buf, size_t len);
+int grads_ng_file_select_time(grads_ng_file_t* file, const char* s,
+                              char* echo_out, size_t echo_len,
+                              char* err, size_t errlen);
 
 /* Data access.
  * Variable handles are borrowed from the file (valid until close, do not
@@ -83,9 +121,11 @@ const char* grads_ng_var_name(const grads_ng_var_t* var);
 int grads_ng_var_levels(const grads_ng_var_t* var);
 double grads_ng_var_undef(const grads_ng_var_t* var);
 const char* grads_ng_file_varname(const grads_ng_file_t* file, int index);
-/* Read one (t, z) slice, 0-based, into out[nx*ny] doubles, x fastest.
- * The data file opens lazily on the first call. Returns 0 on success,
- * -1 with a message in err (up to errlen bytes) otherwise. */
+/* Read one (t, z) slice at the selected ensemble, 0-based, into
+ * out[nx*ny] doubles, x fastest. The data file opens lazily on the first
+ * call. A selected ensemble outside 1..ne degrades to all-missing
+ * (reference parity) rather than failing. Returns 0 on success, -1 with
+ * a message in err (up to errlen bytes) otherwise. */
 int grads_ng_var_slice(grads_ng_var_t* var, int t, int z, double* out,
                        char* err, size_t errlen);
 int grads_ng_read_data(grads_ng_var_t* var, int ix, int iy, int iz, int it, void* buffer);

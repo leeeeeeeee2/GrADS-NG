@@ -5,8 +5,10 @@
  * M2 scope notes (all deviations are honest errors, never silent behavior):
  * - TDEF stores only the time-step count; the absolute time axis is built by
  *   the time module (M3/M4). The start/increment tokens are validated present.
- * - EDEF stores only the ensemble count; member names on following lines are
- *   NOT consumed (a stray name line fails as an unknown directive).
+ * - EDEF stores the ensemble count plus member names: same-line names
+ *   (`EDEF 2 NAMES memA memB`) or one name per following line when the
+ *   card ends with a bare NAMES (the reference form). A bare `EDEF n`
+ *   stores no names.
  * - VARS lines: name + level count are authoritative; a leading integer in
  *   the remainder is kept as the GRIB code; the full remainder is the
  *   long name. There is no per-variable units field in .ctl binary files,
@@ -16,6 +18,7 @@
  */
 
 #include "ctl.h"
+#include "ng_time.h"
 
 #include <ctype.h>
 #include <stdarg.h>
@@ -101,6 +104,40 @@ static int parse_double(const char *tok, double *out) {
     v = strtod(tok, &end);
     if (*end != '\0') return -1;
     *out = v;
+    return 0;
+}
+
+/* Directive keywords: a member-name line starting with one of these is a
+ * malformed EDEF (the names ran into the next card), not a member name. */
+static int is_directive(const char *tok) {
+    static const char *const kw[] = {
+        "DSET", "TITLE", "UNDEF", "XDEF", "YDEF", "ZDEF", "TDEF", "EDEF",
+        "VARS", "ENDVARS", "DTYPE", "OPTIONS", "PDEF", NULL
+    };
+    int i;
+
+    if (!tok) return 0;
+    for (i = 0; kw[i]; i++)
+        if (eqi(tok, kw[i])) return 1;
+    return 0;
+}
+
+/* Store ensemble member name idx (0-based) of count (truncates overlong
+ * names). Allocates the table on first use. */
+static int push_ens_name(ng_ctl_t *ctl, int count, int idx, const char *name,
+                         int lineno) {
+    if (idx < 0 || idx >= count) {
+        fail(lineno, "too many ensemble names (EDEF count is %d)", count);
+        return -1;
+    }
+    if (!ctl->ens_names) {
+        ctl->ens_names = calloc((size_t)count, sizeof(*ctl->ens_names));
+        if (!ctl->ens_names) {
+            fail(lineno, "out of memory");
+            return -1;
+        }
+    }
+    snprintf(ctl->ens_names[idx], NG_CTL_NAMELEN, "%s", name);
     return 0;
 }
 
@@ -296,14 +333,91 @@ ng_ctl_t *ng_ctl_parse(const char *path, const char **err_out) {
                                    "(e.g. 00Z02JAN1987 1DY)");
                 break;
             }
+            /* Eager validation, like the reference open: bad start dates,
+             * unknown units, and non-positive counts fail here. */
+            {
+                ng_time_t t0;
+                int icount;
+                ng_time_unit_t unit;
+                if (strlen(start) >= sizeof(ctl->tdef_start) ||
+                    ng_time_parse(start, &t0) != 0) {
+                    err = fail(lineno, "TDEF has an invalid start time "
+                                       "\"%s\"", start);
+                    break;
+                }
+                if (strlen(incr) >= sizeof(ctl->tdef_incr) ||
+                    ng_incr_parse(incr, &icount, &unit) != 0) {
+                    err = fail(lineno, "TDEF has an invalid time increment "
+                                       "\"%s\" (want N with MN/HR/DY/MO/YR,"
+                                       " N >= 1)", incr);
+                    break;
+                }
+                snprintf(ctl->tdef_start, sizeof(ctl->tdef_start), "%s",
+                         start);
+                snprintf(ctl->tdef_incr, sizeof(ctl->tdef_incr), "%s", incr);
+            }
             ctl->nt = n;
             seen_t = 1;
         } else if (eqi(keyword, "EDEF")) {
-            /* Member names after the count stay on this line (M2 limit). */
+            /* Ensemble count plus member names. Same-line names
+             * (`EDEF 2 NAMES memA memB`) are stored directly; a trailing
+             * bare NAMES (`EDEF 2 NAMES`, the reference form) takes one
+             * name per following line. A bare `EDEF n` stores no names. */
+            int want, got = 0, saw_names = 0, i;
             tok = next_token(&cursor);
-            if (!tok || parse_int(tok, &ctl->ne) != 0 || ctl->ne <= 0) {
+            if (!tok || parse_int(tok, &want) != 0 || want <= 0) {
                 err = fail(lineno, "EDEF needs a positive ensemble count");
                 break;
+            }
+            free(ctl->ens_names);
+            ctl->ens_names = NULL;
+            ctl->ne = want;
+            tok = next_token(&cursor);
+            if (tok && eqi(tok, "NAMES")) {
+                saw_names = 1;
+                tok = next_token(&cursor);
+            }
+            while (tok) {
+                if (push_ens_name(ctl, want, got, tok, lineno) != 0) {
+                    err = g_err;
+                    break;
+                }
+                got++;
+                tok = next_token(&cursor);
+            }
+            if (err) break;
+            if (got == 0 && saw_names) {
+                for (i = 0; i < want; i++) {
+                    char *np = NULL, *name, *rc;
+                    /* Next significant line (blanks/comments skipped). */
+                    do {
+                        if (!fgets(line, sizeof(line), fp)) {
+                            err = fail(lineno, "EDEF needs %d member names, "
+                                              "found %d", want, i);
+                            break;
+                        }
+                        lineno++;
+                        if (!strchr(line, '\n') && !feof(fp)) {
+                            err = fail(lineno, "line exceeds %d characters",
+                                       NG_CTL_LINE_MAX);
+                            break;
+                        }
+                        np = trim(line);
+                    } while (*np == '\0' || *np == '*');
+                    if (err) break;
+                    rc = np;
+                    name = next_token(&rc);
+                    if (!name || is_directive(name)) {
+                        err = fail(lineno, "EDEF needs %d member names, "
+                                          "found %d", want, i);
+                        break;
+                    }
+                    if (push_ens_name(ctl, want, i, name, lineno) != 0) {
+                        err = g_err;
+                        break;
+                    }
+                }
+                if (err) break;
             }
         } else if (eqi(keyword, "VARS")) {
             int want, i;
@@ -444,6 +558,7 @@ void ng_ctl_free(ng_ctl_t *ctl) {
     free(ctl->xvals);
     free(ctl->yvals);
     free(ctl->zvals);
+    free(ctl->ens_names);
     free(ctl);
 }
 

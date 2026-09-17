@@ -126,6 +126,67 @@ int main(int argc, char **argv) {
     CHECK(grads_ng_file_select(g_file, 0, 9, emsg, sizeof(emsg)) != 0,
           "z past end rejected");
 
+    /* X/Y window slicing clips every evaluation to the selected grid box. */
+    CHECK(grads_ng_file_select_xy(g_file, 0, 1, 0, 2, emsg,
+                                  sizeof(emsg)) == 0,
+          "select x=1..2");
+    a = run("hgt", &err);
+    if (!a || a->nx != 2 || a->ny != 3) {
+        CHECK(0, "windowed slice is 2x3");
+    } else {
+        int ok = 1;
+        for (y = 0; y < 3 && ok; y++)
+            for (x = 0; x < 2 && ok; x++)
+                if (a->data[y * 2 + x] != raw(0, 0, y, x)) ok = 0;
+        CHECK(ok, "windowed values match fixture");
+    }
+    ng_array_free(a);
+
+    CHECK(grads_ng_file_select_xy(g_file, 0, 0, 1, 1, emsg,
+                                  sizeof(emsg)) == 0,
+          "select single point x=1 y=2");
+    a = run("tsfc+1", &err);
+    CHECK(a && a->nx == 1 && a->ny == 1 &&
+          a->data[0] == raw(0, 0, 1, 0) + 1.0,
+          "expression over point window");
+    ng_array_free(a);
+
+    a = run("ave(hgt,z=1,z=2)", &err);
+    CHECK(a && a->nx == 1 && a->ny == 1 &&
+          a->data[0] == (raw(0, 0, 1, 0) + raw(0, 1, 1, 0)) / 2.0,
+          "reduction over point window");
+    ng_array_free(a);
+
+    CHECK(grads_ng_file_select_xy(g_file, 0, 3, 0, 2, emsg,
+                                  sizeof(emsg)) == 0,
+          "restore full window");
+    a = run("hgt", &err);
+    CHECK(a && a->nx == NX && a->ny == NY, "full grid restored");
+    ng_array_free(a);
+
+    /* Evaluation follows world-coordinate selection (lon 0..180 clips
+     * to grids 1..3 on the fixture's 90-step axis). */
+    {
+        double s1, s2;
+        CHECK(grads_ng_file_select_world(g_file, 'x', 0.0, 180.0, &s1,
+                                         &s2, emsg, sizeof(emsg)) == 0,
+              "select lon 0 180");
+        a = run("hgt", &err);
+        if (!a || a->nx != 3 || a->ny != NY) {
+            CHECK(0, "world window is 3x3");
+        } else {
+            int ok = 1;
+            for (y = 0; y < NY && ok; y++)
+                for (x = 0; x < 3 && ok; x++)
+                    if (a->data[y * 3 + x] != raw(0, 0, y, x)) ok = 0;
+            CHECK(ok, "world window values match fixture");
+        }
+        ng_array_free(a);
+        CHECK(grads_ng_file_select_xy(g_file, 0, 3, 0, 2, emsg,
+                                      sizeof(emsg)) == 0,
+              "restore full window after world select");
+    }
+
     /* UNDEF->NaN propagation at t=2 (sentinel at y=2,x=3). */
     CHECK(grads_ng_file_select(g_file, 1, 0, emsg, sizeof(emsg)) == 0,
           "select t=2");
@@ -245,6 +306,35 @@ int main(int argc, char **argv) {
         }
     }
     CHECK(a && match(a, want, wnan), "ave over t skips missing");
+    ng_array_free(a);
+
+    a = run("sum(tsfc,t=1,t=2)", &err);
+    for (i = 0; i < N; i++) {
+        double a0;
+        y = i / NX;
+        x = i % NX;
+        wnan[i] = 0;
+        a0 = raw(0, 0, y, x);
+        if (y == 2 && x == 3) want[i] = a0;  /* only t=1 valid */
+        else want[i] = a0 + raw(1, 0, y, x);
+    }
+    CHECK(a && match(a, want, wnan), "sum over t skips missing");
+    ng_array_free(a);
+
+    a = run("sum(hgt,z=1,z=2)", &err);
+    for (i = 0; i < N; i++)
+        want[i] = raw(0, 0, i / NX, i % NX) + raw(0, 1, i / NX, i % NX);
+    CHECK(a && match(a, want, NULL), "sum over z adds levels");
+    ng_array_free(a);
+
+    a = run("sum(sqrt(0-tsfc-100),t=1,t=2)", &err);
+    for (i = 0; i < N; i++) wnan[i] = 1;
+    CHECK(a && match(a, want, wnan), "sum of all-missing stays missing");
+    ng_array_free(a);
+
+    a = run("sum(tsfc)", &err);
+    CHECK(!a && err && strstr(err, "3 arguments"), "sum arity enforced (%s)",
+          err ? err : "no message");
     ng_array_free(a);
 
     a = run("max(hgt,z=1,z=2)", &err);

@@ -994,7 +994,8 @@ int grads_ng_ast_eval(const grads_ng_ast_node_t* node, double* out,
             /* Reductions need grid context; -e is scalar-only. */
             if (cname && (math_name_eq(cname, "max") ||
                           math_name_eq(cname, "min") ||
-                          math_name_eq(cname, "ave")))
+                          math_name_eq(cname, "ave") ||
+                          math_name_eq(cname, "sum")))
                 NG_EVAL_FAIL("\"%s\" reduces over a dimension range "
                              "(e.g. %s(x,t=1,t=2)); use d", cname, cname);
             if (node->value.call.argc > 16)

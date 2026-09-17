@@ -95,3 +95,57 @@ jobs:
         run: |
           ./grads-2.2.1/build/grads -help | grep -q "GrADS version 2.2.1"
           echo "Smoke test passed: grads -help reports version 2.2.1"
+
+  ng-unit:
+    name: GrADS-NG unit tests (no network data)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake build-essential
+
+      - name: Configure and build ng
+        run: |
+          cmake -B ng/build -S ng -DCMAKE_BUILD_TYPE=Release
+          cmake --build ng/build -j$(nproc)
+
+      - name: Fast unit tests (external data excluded)
+        run: ctest --test-dir ng/build -LE external-data --output-on-failure
+
+  ng-nclimgrid:
+    name: GrADS-NG nClimGrid-Daily suite (external data)
+    runs-on: ubuntu-latest
+    needs: ng-unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake build-essential python3-pip
+
+      - name: Install NetCDF readers
+        run: pip3 install --user netCDF4 numpy
+
+      - name: Cache nClimGrid fixture
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/grads-ng-test-data
+          key: nclimgrid-${{ hashFiles('ng/tests/integration/nclimgrid/fixture.conf') }}
+          restore-keys: nclimgrid-
+
+      - name: Acquire fixture
+        run: bash ng/tests/integration/nclimgrid/download-nclimgrid-test-data.sh
+
+      - name: Configure and build ng
+        run: |
+          cmake -B ng/build -S ng -DCMAKE_BUILD_TYPE=Release
+          cmake --build ng/build -j$(nproc)
+
+      - name: nClimGrid suite (reference arm skips without REF_GRADS_BIN)
+        run: ctest --test-dir ng/build -L nclimgrid --output-on-failure

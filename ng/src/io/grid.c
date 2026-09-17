@@ -49,6 +49,11 @@ static int var_levels(const ng_ctl_t *c, int var) {
     return n == 0 ? 1 : n;
 }
 
+/* Ensemble members per file (a missing EDEF card means one member). */
+static int var_members(const ng_ctl_t *c) {
+    return c->ne > 0 ? c->ne : 1;
+}
+
 ng_grid_t *ng_grid_open(const ng_ctl_t *ctl, const char **err_out) {
     ng_grid_t *g;
     char path[NG_CTL_PATHLEN * 2];
@@ -114,7 +119,10 @@ ng_grid_t *ng_grid_open(const ng_ctl_t *ctl, const char **err_out) {
     off = 0;
     for (v = 0; v < ctl->nvars; v++) {
         g->var_base[v] = off;
-        off += (size_t)ctl->nt * (size_t)var_levels(ctl, v) * g->slice_bytes;
+        /* Ensemble outermost (reference-probed): each member holds the
+         * full nt x levels run before the next member starts. */
+        off += (size_t)var_members(ctl) * (size_t)ctl->nt *
+               (size_t)var_levels(ctl, v) * g->slice_bytes;
     }
     if (off > size) {
         if (err_out)
@@ -141,8 +149,8 @@ int ng_grid_var_levels(const ng_grid_t *g, int var) {
     return var_levels(g->desc, var);
 }
 
-int ng_grid_read_slice(ng_grid_t *g, int var, int t, int z, double *out,
-                       const char **err_out) {
+int ng_grid_read_slice(ng_grid_t *g, int var, int t, int z, int e,
+                       double *out, const char **err_out) {
     const ng_ctl_t *c;
     size_t rec, pos, i;
     const unsigned char *p;
@@ -170,9 +178,16 @@ int ng_grid_read_slice(ng_grid_t *g, int var, int t, int z, double *out,
                             c->vars[var].name, var_levels(c, var) - 1);
         return -1;
     }
+    if (e < 0 || e >= var_members(c)) {
+        if (err_out)
+            *err_out = fail("ensemble %d out of range (file holds 1..%d)",
+                            e + 1, var_members(c));
+        return -1;
+    }
 
-    /* Record order: time outer, level inner. */
-    rec = (size_t)t * (size_t)var_levels(c, var) + (size_t)z;
+    /* Record order: ensemble outermost, then time, level innermost. */
+    rec = ((size_t)e * (size_t)c->nt + (size_t)t) *
+          (size_t)var_levels(c, var) + (size_t)z;
     pos = g->var_base[var] + rec * g->slice_bytes;
     if (c->sequential) {
         uint32_t head, tail, expect;
