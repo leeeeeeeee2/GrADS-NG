@@ -58,6 +58,8 @@ Goal: smallest useful vertical slice through CLI → dispatch → session.
 - [x] M4 slice 1: multi-argument `max/min/pow` elementwise (scalar + array),
   max/min skip lone missing, `test_eval` +9, `test_expr` +7, CLI `d max`;
   `ctest` 25/25 green, zero warnings.
+- [x] `close N`: reference-verified against 2.2.1.oga.1 (number required,
+  last-file-only, trailing words ignored); 7 CLI tests; `ctest` 32/32 green.
 - [ ] M4 slice 2: time/ensemble aggregation (`ave` needs t-range syntax).
 - [ ] Slicing/subscript dimensions beyond the selected (t,z).
 - Done when: `(tsfc-273.16)*9/5+32`-class expressions match reference values.

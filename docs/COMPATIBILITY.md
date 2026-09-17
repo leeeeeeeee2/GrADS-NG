@@ -13,7 +13,8 @@ baseline: what is promised, what holds today, and what is intentionally absent.
 | `quit` / `exit` | ✅ | leaves REPL / ends `-c` |
 | `help` | ✅ | lists supported commands |
 | `set t/z`, `q dims` | ✅ selection | 1-based validated indices on the default file |
-| `sdfopen`, `xdfopen`, `close`, `define`, `clear`, `draw`, `print`, `enable`, `disable`, `reinit`, `reset` | ❌ | parse-level rejection with a helpful error; see ROADMAP M4–M6 |
+| `close N` | ✅ reference-verified | requires a number; only the last open file may close (`Missing/Invalid file number`, `Only last file may be closed`, `File N has been closed` — all probed against 2.2.1.oga.1); trailing words ignored |
+| `sdfopen`, `xdfopen`, `define`, `clear`, `draw`, `print`, `enable`, `disable`, `reinit`, `reset` | ❌ | parse-level rejection with a helpful error; see ROADMAP M4–M6 |
 
 Unknown commands fail with the command name echoed plus the supported list —
 never a bare "Error occurred."

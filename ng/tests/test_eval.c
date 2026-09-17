@@ -189,22 +189,6 @@ int main(int argc, char **argv) {
           err ? err : "no message");
     ng_array_free(a);
 
-    a = run("max(tsfc,hgt)", &err);
-    for (i = 0; i < N; i++) {
-        double t = raw(0, 0, i / NX, i % NX);
-        want[i] = t;  /* hgt slice equals tsfc slice at t=1,z=1 */
-    }
-    CHECK(a && match(a, want, NULL), "max of equal slices");
-    ng_array_free(a);
-
-    a = run("min(tsfc,10)", &err);
-    for (i = 0; i < N; i++) {
-        double t = raw(0, 0, i / NX, i % NX);
-        want[i] = (t < 10.0) ? t : 10.0;
-    }
-    CHECK(a && match(a, want, NULL), "min against scalar clamp");
-    ng_array_free(a);
-
     a = run("pow(tsfc,2)", &err);
     for (i = 0; i < N; i++) {
         double t = raw(0, 0, i / NX, i % NX);
@@ -213,31 +197,8 @@ int main(int argc, char **argv) {
     CHECK(a && match(a, want, NULL), "pow matches square");
     ng_array_free(a);
 
-    /* max skips a lone missing (t=2 sentinel); min likewise. */
     CHECK(grads_ng_file_select(g_file, 1, 0, emsg, sizeof(emsg)) == 0,
-          "select t=2 for max/min missing");
-    a = run("max(tsfc,1005)", &err);
-    for (i = 0; i < N; i++) {
-        y = i / NX;
-        x = i % NX;
-        wnan[i] = 0;
-        if (y == 2 && x == 3) want[i] = 1005.0;  /* lone NaN loses */
-        else {
-            double t = raw(1, 0, y, x);
-            want[i] = (t > 1005.0) ? t : 1005.0;
-        }
-    }
-    CHECK(a && match(a, want, wnan), "max skips lone missing");
-    ng_array_free(a);
-
-    a = run("max(tsfc-tsfc,tsfc-tsfc)", &err);
-    for (i = 0; i < N; i++) {
-        wnan[i] = (i / NX == 2 && i % NX == 3);
-        want[i] = 0.0;
-    }
-    CHECK(a && match(a, want, wnan), "max of all-missing stays missing");
-    ng_array_free(a);
-
+          "select t=2");
     a = run("pow(tsfc-tsfc,2)", &err);
     for (i = 0; i < N; i++) {
         wnan[i] = (i / NX == 2 && i % NX == 3);
@@ -245,17 +206,84 @@ int main(int argc, char **argv) {
     }
     CHECK(a && match(a, want, wnan), "pow propagates missing");
     ng_array_free(a);
-
     CHECK(grads_ng_file_select(g_file, 0, 0, emsg, sizeof(emsg)) == 0,
           "select back to t=1");
 
-    a = run("frobnicate(tsfc)", &err);
-    CHECK(!a && err && strstr(err, "frobnicate"), "unknown func named (%s)",
-          err ? err : "no message");
+    /* Reductions over t/z ranges (GrADS max/min/ave semantics). */
+    a = run("max(tsfc,t=1,t=2)", &err);
+    for (i = 0; i < N; i++) {
+        /* t=2 wins everywhere except the sentinel, where t=1 fills in. */
+        y = i / NX;
+        x = i % NX;
+        wnan[i] = 0;
+        want[i] = (y == 2 && x == 3) ? raw(0, 0, y, x) : raw(1, 0, y, x);
+    }
+    CHECK(a && match(a, want, wnan), "max over t skips lone missing");
+    ng_array_free(a);
+
+    a = run("min(tsfc,t=1,t=2)", &err);
+    for (i = 0; i < N; i++) {
+        y = i / NX;
+        x = i % NX;
+        wnan[i] = 0;
+        want[i] = raw(0, 0, y, x);  /* t=1 wins; sentinel filled from t=1 */
+    }
+    CHECK(a && match(a, want, wnan), "min over t");
+    ng_array_free(a);
+
+    a = run("ave(tsfc,t=1,t=2)", &err);
+    for (i = 0; i < N; i++) {
+        double a0, a1;
+        y = i / NX;
+        x = i % NX;
+        wnan[i] = 0;
+        a0 = raw(0, 0, y, x);
+        if (y == 2 && x == 3) want[i] = a0;  /* only t=1 valid */
+        else {
+            a1 = raw(1, 0, y, x);
+            want[i] = (a0 + a1) / 2.0;
+        }
+    }
+    CHECK(a && match(a, want, wnan), "ave over t skips missing");
+    ng_array_free(a);
+
+    a = run("max(hgt,z=1,z=2)", &err);
+    for (i = 0; i < N; i++) want[i] = raw(0, 1, i / NX, i % NX);
+    CHECK(a && match(a, want, NULL), "max over z picks upper level");
+    ng_array_free(a);
+
+    a = run("ave(tsfc+tsfc,t=1,t=1)", &err);
+    for (i = 0; i < N; i++) want[i] = 2.0 * raw(0, 0, i / NX, i % NX);
+    CHECK(a && match(a, want, NULL), "reduction over expressions");
     ng_array_free(a);
 
     a = run("max(tsfc)", &err);
-    CHECK(!a && err && strstr(err, "2 argument"), "max arity enforced (%s)",
+    CHECK(!a && err && strstr(err, "3 arguments"), "max arity enforced (%s)",
+          err ? err : "no message");
+    ng_array_free(a);
+
+    a = run("max(tsfc,x=1,x=4)", &err);
+    CHECK(!a && err && strstr(err, "only t/z"), "x ranges rejected (%s)",
+          err ? err : "no message");
+    ng_array_free(a);
+
+    a = run("max(tsfc,t=2,t=1)", &err);
+    CHECK(!a && err && strstr(err, "past end"), "reversed range rejected (%s)",
+          err ? err : "no message");
+    ng_array_free(a);
+
+    a = run("max(tsfc,t=1,z=2)", &err);
+    CHECK(!a && err && strstr(err, "must match"), "mixed dims rejected (%s)",
+          err ? err : "no message");
+    ng_array_free(a);
+
+    a = run("max(tsfc,t=1,t=9)", &err);
+    CHECK(!a && err && strstr(err, "out of range"), "range bound checked (%s)",
+          err ? err : "no message");
+    ng_array_free(a);
+
+    a = run("frobnicate(tsfc)", &err);
+    CHECK(!a && err && strstr(err, "frobnicate"), "unknown func named (%s)",
           err ? err : "no message");
     ng_array_free(a);
 

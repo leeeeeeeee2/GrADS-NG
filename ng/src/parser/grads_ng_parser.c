@@ -459,6 +459,41 @@ static grads_ng_ast_node_t* parse_primary(grads_ng_parser_t* parser) {
                 if (lex->current.type != TOK_RPAREN) {
                     for (;;) {
                         grads_ng_ast_node_t* arg = parse_expr(parser);
+                        /* Dimension argument (max/ave style): t=1, z=2.
+                         * Represented as an EQUAL binary node so the
+                         * evaluator can tell ranges from values. */
+                        if (PARSE_OK(parser) && arg &&
+                            arg->type == AST_IDENT_EXPR &&
+                            lex->current.type == TOK_EQUAL) {
+                            grads_ng_ast_node_t* val;
+                            grads_ng_ast_node_t* dim;
+                            grads_ng_lexer_advance(lex);
+                            val = parse_expr(parser);
+                            if (!PARSE_OK(parser) || !val) {
+                                grads_ng_ast_destroy(arg);
+                                grads_ng_ast_destroy(val);
+                                grads_ng_ast_destroy(node);
+                                if (PARSE_OK(parser)) {
+                                    parser->has_error = 1;
+                                    snprintf(parser->err_msg,
+                                            sizeof(parser->err_msg),
+                                            "bad dimension value");
+                                }
+                                return NULL;
+                            }
+                            dim = grads_ng_ast_create(AST_BINARY_EXPR);
+                            if (!dim) {
+                                grads_ng_ast_destroy(arg);
+                                grads_ng_ast_destroy(val);
+                                grads_ng_ast_destroy(node);
+                                parser->has_error = 1;
+                                return NULL;
+                            }
+                            dim->op = TOK_EQUAL;
+                            dim->left = arg;
+                            dim->right = val;
+                            arg = dim;
+                        }
                         if (!PARSE_OK(parser) || !arg) {
                             grads_ng_ast_destroy(arg);
                             grads_ng_ast_destroy(node);
@@ -818,15 +853,12 @@ int grads_ng_math_known(const char *name) {
     return name && (math_name_eq(name, "abs") || math_name_eq(name, "sqrt") ||
                     math_name_eq(name, "exp") || math_name_eq(name, "log") ||
                     math_name_eq(name, "sin") || math_name_eq(name, "cos") ||
-                    math_name_eq(name, "max") || math_name_eq(name, "min") ||
                     math_name_eq(name, "pow"));
 }
 
 int grads_ng_math_arity(const char *name) {
     if (!name) return -1;
-    if (math_name_eq(name, "max") || math_name_eq(name, "min") ||
-        math_name_eq(name, "pow"))
-        return 2;
+    if (math_name_eq(name, "pow")) return 2;
     return grads_ng_math_known(name) ? 1 : -1;
 }
 
@@ -840,36 +872,20 @@ int grads_ng_math_apply(const char* name, const double* argv, int argc,
     } while (0)
 
     if (!name || !argv || !out) MATH_FAIL("cannot apply an empty function");
-    if (math_name_eq(name, "max") || math_name_eq(name, "min") ||
-        math_name_eq(name, "pow")) {
+    if (math_name_eq(name, "pow")) {
         double y;
         if (argc != 2)
             MATH_FAIL("%s takes 2 arguments (%d given)",
                       name ? name : "?", argc);
         x = argv[0];
         y = argv[1];
-        if (math_name_eq(name, "pow")) {
-            /* pow follows arithmetic: any NaN input yields NaN. */
-            if (isnan(x) || isnan(y)) {
-                *out = NAN;
-                return 0;
-            }
-            *out = pow(x, y);
-            if (!isfinite(*out)) MATH_FAIL("power overflow for %g^%g", x, y);
+        /* pow follows arithmetic: any NaN input yields NaN. */
+        if (isnan(x) || isnan(y)) {
+            *out = NAN;
             return 0;
         }
-        /* max/min skip a lone NaN (missing loses to valid data);
-         * both NaN stays NaN. Flagged for M7 reference-corpus check. */
-        if (isnan(x)) {
-            *out = y;
-            return 0;
-        }
-        if (isnan(y)) {
-            *out = x;
-            return 0;
-        }
-        *out = math_name_eq(name, "max") ? ((x > y) ? x : y)
-                                         : ((x < y) ? x : y);
+        *out = pow(x, y);
+        if (!isfinite(*out)) MATH_FAIL("power overflow for %g^%g", x, y);
         return 0;
     }
     if (argc != 1)
@@ -974,6 +990,13 @@ int grads_ng_ast_eval(const grads_ng_ast_node_t* node, double* out,
         case AST_CALL_EXPR: {
             double vals[16];
             int i;
+            const char *cname = node->value.call.name;
+            /* Reductions need grid context; -e is scalar-only. */
+            if (cname && (math_name_eq(cname, "max") ||
+                          math_name_eq(cname, "min") ||
+                          math_name_eq(cname, "ave")))
+                NG_EVAL_FAIL("\"%s\" reduces over a dimension range "
+                             "(e.g. %s(x,t=1,t=2)); use d", cname, cname);
             if (node->value.call.argc > 16)
                 NG_EVAL_FAIL("too many arguments to %s",
                              node->value.call.name);

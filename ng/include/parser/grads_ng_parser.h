@@ -169,10 +169,9 @@ int grads_ng_ast_eval(const grads_ng_ast_node_t* node, double* out,
 
 /* One math-function application shared by scalar and array evaluation.
  * Supported (case-insensitive): abs, sqrt, exp, log (natural logarithm),
- * sin, cos (1 argument); max, min, pow (2 arguments, elementwise).
- * Missing-value rule: a NaN input yields NaN, except max/min which let a
- * lone NaN lose to valid data (both NaN yields NaN; M7 corpus check pending).
- * Domain errors fail with a message. */
+ * sin, cos (1 argument); pow (2 arguments, elementwise like `^`).
+ * max/min/ave are dimension reductions, not pointwise functions, and live
+ * in the array evaluator. A NaN input yields NaN; domain errors fail. */
 int grads_ng_math_apply(const char* name, const double* argv, int argc,
                         double* out, char* err, size_t errlen);
 /* True for the names math_apply implements. */

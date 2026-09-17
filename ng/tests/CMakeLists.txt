@@ -93,9 +93,19 @@ set_tests_properties(cli_d_function PROPERTIES
     PASS_REGULAR_EXPRESSION "Displaying sqrt\\(tsfc\\): 4 x 3")
 
 add_test(NAME cli_d_maxmin
-    COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nd max(tsfc,10)\nquit\n' | ${GRADS_NG_BIN}")
+    COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nd max(tsfc,t=1,t=2)\nquit\n' | ${GRADS_NG_BIN}")
 set_tests_properties(cli_d_maxmin PROPERTIES
-    PASS_REGULAR_EXPRESSION "Displaying max\\(tsfc,10\\): 4 x 3")
+    PASS_REGULAR_EXPRESSION "Displaying max\\(tsfc,t=1,t=2\\): 4 x 3")
+
+add_test(NAME cli_d_ave
+    COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nd ave(tsfc,t=1,t=2)\nquit\n' | ${GRADS_NG_BIN}")
+set_tests_properties(cli_d_ave PROPERTIES
+    PASS_REGULAR_EXPRESSION "Displaying ave\\(tsfc,t=1,t=2\\): 4 x 3")
+
+add_test(NAME cli_d_badrange
+    COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nd max(tsfc,t=2,t=1)\nquit\n' | ${GRADS_NG_BIN}")
+set_tests_properties(cli_d_badrange PROPERTIES
+    PASS_REGULAR_EXPRESSION "past end")
 
 add_test(NAME cli_set_dims
     COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nset t 2\nset z 2\nq dims\nd hgt\nquit\n' | ${GRADS_NG_BIN}")

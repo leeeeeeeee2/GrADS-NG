@@ -126,14 +126,13 @@ int main(void) {
     check_value("sqrt(16)", 4.0);
     check_value("sin(0)", 0.0);
     check_value("ABS(0-5)+1", 6.0);
-    check_value("max(3,7)", 7.0);
-    check_value("min(3,7)", 3.0);
     check_value("pow(2,10)", 1024.0);
-    check_value("max(1+1,2*2)", 4.0);
+    check_value("pow(9,0.5)", 3.0);
     check_error("frobnicate(1)", "unknown function");
     check_error("abs(1,2)", "1 argument");
-    check_error("max(1)", "2 arguments");
-    check_error("min(1,2,3)", "2 arguments");
+    /* max/min/ave are dimension reductions, not scalar functions. */
+    check_error("max(3,7)", "reduces over a dimension range");
+    check_error("ave(tsfc,t=1,t=2)", "reduces over a dimension range");
     check_error("sqrt(-1)", "negative");
     check_error("sin(1", "Expected )");
 

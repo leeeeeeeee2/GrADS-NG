@@ -58,9 +58,190 @@ static ng_array_t *array_const(int nx, int ny, double v) {
 
 typedef struct {
     grads_ng_file_t *file;
-    int nx, ny, t, z;
+    int nx, ny, nt, nz, t, z;
     const char **err_out;
 } eval_ctx_t;
+
+static ng_array_t *eval_node(eval_ctx_t *ctx,
+                             const grads_ng_ast_node_t *node);
+
+static int red_name_eq(const char *a, const char *b) {
+    while (*a && *b) {
+        int ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+        if (ca != cb) return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+static int is_reduce(const char *name) {
+    return name && (red_name_eq(name, "max") || red_name_eq(name, "min") ||
+                    red_name_eq(name, "ave"));
+}
+
+/* Resolve one range bound (EQUAL-node IDENT = constant) to a 1-based index.
+ * Only t/z/lev grid indices in M4; world coordinates arrive later. */
+static int dim_bound(eval_ctx_t *ctx, const grads_ng_ast_node_t *arg,
+                     char *dim, int *idx) {
+    const char *dname;
+    double v;
+    char emsg[256];
+
+    if (!arg || arg->type != AST_BINARY_EXPR || arg->op != TOK_EQUAL ||
+        !arg->left || arg->left->type != AST_IDENT_EXPR || !arg->right) {
+        *ctx->err_out =
+            fail("range bounds look like dim=start, e.g. t=1 (got %s)",
+                 "?");
+        return -1;
+    }
+    dname = arg->left->value.string;
+    if (!dname) {
+        *ctx->err_out = fail("empty dimension name in range");
+        return -1;
+    }
+    if (red_name_eq(dname, "t")) *dim = 't';
+    else if (red_name_eq(dname, "z") || red_name_eq(dname, "lev")) *dim = 'z';
+    else {
+        *ctx->err_out = fail("only t/z ranges are supported in M4 "
+                             "(got '%s')", dname);
+        return -1;
+    }
+    if (grads_ng_ast_eval(arg->right, &v, emsg, sizeof(emsg)) != 0) {
+        *ctx->err_out = fail("bad range value: %s", emsg);
+        return -1;
+    }
+    if (!(v >= 1.0) || v != floor(v)) {
+        *ctx->err_out = fail("range bounds must be 1-based indices "
+                             "(got %g)", v);
+        return -1;
+    }
+    *idx = (int)v;
+    if (*dim == 't' && *idx > ctx->nt) {
+        *ctx->err_out = fail("t=%d out of range (file holds 1..%d)", *idx,
+                             ctx->nt);
+        return -1;
+    }
+    if (*dim == 'z' && *idx > ctx->nz) {
+        *ctx->err_out = fail("z=%d out of range (file holds 1..%d)", *idx,
+                             ctx->nz);
+        return -1;
+    }
+    return 0;
+}
+
+/* max/min/ave(expr, d1, d2) over a t/z index range (uniform weights for
+ * ave; all-NaN yields NaN). GrADS semantics per the 2.2.1 function reference
+ * bundled for M7 work. */
+static ng_array_t *reduce(eval_ctx_t *ctx, const char *fname,
+                          const grads_ng_ast_node_t *expr,
+                          const grads_ng_ast_node_t *d1,
+                          const grads_ng_ast_node_t *d2) {
+    char dim1, dim2;
+    int a, b, k, st, sz, n;
+    long i, len;
+    ng_array_t *acc, *slab;
+    double *sum = NULL;
+    long *cnt = NULL;
+    int is_ave = red_name_eq(fname, "ave");
+
+    if (dim_bound(ctx, d1, &dim1, &a) != 0) return NULL;
+    if (dim_bound(ctx, d2, &dim2, &b) != 0) return NULL;
+    if (dim1 != dim2) {
+        *ctx->err_out = fail("range dimensions must match (got %c and %c)",
+                             dim1, dim2);
+        return NULL;
+    }
+    if (a > b) {
+        *ctx->err_out = fail("range start %d is past end %d", a, b);
+        return NULL;
+    }
+    acc = array_new(ctx->nx, ctx->ny);
+    if (is_ave) {
+        len = (long)ctx->nx * ctx->ny;
+        sum = malloc((size_t)len * sizeof(*sum));
+        cnt = malloc((size_t)len * sizeof(*cnt));
+        if (!acc || !sum || !cnt) {
+            ng_array_free(acc);
+            free(sum);
+            free(cnt);
+            *ctx->err_out = fail("out of memory");
+            return NULL;
+        }
+        for (i = 0; i < len; i++) {
+            sum[i] = 0.0;
+            cnt[i] = 0;
+        }
+    } else if (!acc) {
+        *ctx->err_out = fail("out of memory");
+        return NULL;
+    }
+
+    st = ctx->t;
+    sz = ctx->z;
+    n = 0;
+    for (k = a; k <= b; k++) {
+        if (dim1 == 't') ctx->t = k - 1;
+        else ctx->z = k - 1;
+        slab = eval_node(ctx, expr);
+        if (!slab) {
+            ctx->t = st;
+            ctx->z = sz;
+            ng_array_free(acc);
+            free(sum);
+            free(cnt);
+            return NULL;
+        }
+        if (slab->nx != ctx->nx || slab->ny != ctx->ny) {
+            ctx->t = st;
+            ctx->z = sz;
+            ng_array_free(slab);
+            ng_array_free(acc);
+            free(sum);
+            free(cnt);
+            *ctx->err_out = fail("shape changed mid-reduction");
+            return NULL;
+        }
+        len = (long)ctx->nx * ctx->ny;
+        if (n == 0 && !is_ave) {
+            for (i = 0; i < len; i++) acc->data[i] = slab->data[i];
+        } else if (!is_ave) {
+            for (i = 0; i < len; i++) {
+                double cur = acc->data[i], v = slab->data[i];
+                if (isnan(v)) continue;
+                if (isnan(cur)) {
+                    acc->data[i] = v;
+                    continue;
+                }
+                if (red_name_eq(fname, "max")) {
+                    if (v > cur) acc->data[i] = v;
+                } else {
+                    if (v < cur) acc->data[i] = v;
+                }
+            }
+        } else {
+            for (i = 0; i < len; i++) {
+                if (!isnan(slab->data[i])) {
+                    sum[i] += slab->data[i];
+                    cnt[i]++;
+                }
+            }
+        }
+        ng_array_free(slab);
+        n++;
+    }
+    ctx->t = st;
+    ctx->z = sz;
+    if (is_ave) {
+        for (i = 0; i < len; i++)
+            acc->data[i] = (cnt[i] > 0) ? sum[i] / (double)cnt[i] : NAN;
+        free(sum);
+        free(cnt);
+    }
+    return acc;
+}
 
 /* Load a variable slice, converting UNDEF to NaN. */
 static ng_array_t *load_var(eval_ctx_t *ctx, const char *name) {
@@ -228,7 +409,20 @@ static ng_array_t *eval_node(eval_ctx_t *ctx,
              * fail); domain errors on real data become missing. */
             const char *fname = node->value.call.name;
             int argc = node->value.call.argc;
-            int arity = grads_ng_math_arity(fname);
+            int arity;
+            /* Dimension reductions own max/min/ave (GrADS reference). */
+            if (is_reduce(fname)) {
+                if (argc != 3) {
+                    *ctx->err_out =
+                        fail("%s(expr, dim1, dim2) takes 3 arguments "
+                             "(%d given)", fname ? fname : "?", argc);
+                    return NULL;
+                }
+                return reduce(ctx, fname, node->value.call.argv[0],
+                              node->value.call.argv[1],
+                              node->value.call.argv[2]);
+            }
+            arity = grads_ng_math_arity(fname);
             ng_array_t **args;
             ng_array_t *out;
             double *vals;
@@ -311,6 +505,8 @@ ng_array_t *ng_eval_array(grads_ng_file_t *file,
     ctx.file = file;
     ctx.nx = nx;
     ctx.ny = ny;
+    ctx.nt = nt;
+    ctx.nz = nz;
     ctx.err_out = err_out;
     if (grads_ng_file_selected(file, &ctx.t, &ctx.z) != 0) {
         ctx.t = 0;
