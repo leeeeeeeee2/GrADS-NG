@@ -53,11 +53,14 @@ Committed goldens (expected/)
   written summary artifact.
 - `tests/test_perf.py` — baseline timings (open 0.01 s, monthly mean over
   25.6 M cells 0.35 s on the dev machine; bounds are anti-hang guards).
+- `tests/test_render_plot.py` — NG `gxprint` on instance data (stdlib only):
+  PNG signature/chunks/CRCs, IHDR dims, inflate size, shade orientation,
+  contour presence, magenta missing, PPM/PNG raster identity, `.gif` error.
 
-The dataset has no vector fields and NG has no renderer yet (M5): vector
-coverage asserts the absence honestly, and rendering coverage asserts the
-data path into the renderer plus documents the pixel gap. Nothing passes
-silently: unavailable stages SKIP with `SKIP:` reasons surfaced by CTest.
+The dataset has no vector fields, so vector coverage asserts the absence
+honestly. NG renders shaded + contour PPM/PNG (M5 slice 2); the reference
+arm still covers the legacy render data-path. Nothing passes silently:
+unavailable stages SKIP with `SKIP:` reasons surfaced by CTest.
 
 ## 3. How to run
 
@@ -126,5 +129,7 @@ pin with a regression test. Discrepancies found so far:
 No committed pixels (font/GPU nondeterminism). Committed instead: the exact
 render-input field (`contour_tmax.gr` companion, full-grid stats golden),
 the contour-level log line, and the command. When a display GX is present,
-`printim` output >1 KB counts as rendered. Same policy will cover NG's M5
-renderer when it lands.
+`printim` output >1 KB counts as rendered. NG's own renderer
+(`test_render_plot.py`) asserts stronger invariants live on every run —
+valid PNG framing, shade orientation, contour presence, raster identity —
+without storing pixels.

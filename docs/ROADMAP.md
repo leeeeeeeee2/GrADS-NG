@@ -103,6 +103,18 @@ Goal: smallest useful vertical slice through CLI → dispatch → session.
   (18 checks incl. byte-exact header/pixel rows) + 4 CLI tests;
   `ctest` 57/57 green, zero warnings. Left for later: line/contour/
   vector/text/map primitives, PNG output.
+- [x] Slice 2: contour lines + PNG. Marching-squares tracing
+  (`contour.h/.c`: nice even levels spanning the valid range, NaN cells
+  skipped, saddle disambiguation) rasterized as 1px black lines over the
+  shared RGB raster, plus a dependency-free byte-deterministic PNG writer
+  (`png.h/.c`: stored deflate blocks, CRC/Adler, tEXt label). `gxprint`
+  accepts `.ppm`/`.png`; PPM and PNG share the raster byte-for-byte.
+  `test_render` (48 checks incl. CRC test vectors, chunk framing, stride
+  regression) + CLI tests (png signature via `od`); instance-tested on
+  nClimGrid July-15 tmax (2420x2420: south-hot-light vs north-cool-dark,
+  contour presence, magenta missing, PPM/PNG identity) with a permanent
+  `nclimgrid_render_plot` regression test. Left for later: vector/text/
+  map primitives, compressed PNG, `set gxout` display modes.
 - Done when: commands produce byte-comparable output files in CI.
 
 ## M6 — Script Compatibility

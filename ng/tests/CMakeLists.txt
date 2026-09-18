@@ -201,7 +201,12 @@ set_tests_properties(cli_set_e_bad PROPERTIES
 add_test(NAME cli_gxprint
     COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nd hgt\ngxprint gxprint_cli.ppm\nquit\n' | ${GRADS_NG_BIN} -o ${CMAKE_CURRENT_BINARY_DIR}")
 set_tests_properties(cli_gxprint PROPERTIES
-    PASS_REGULAR_EXPRESSION "Wrote .*gxprint_cli\\.ppm \\(40 x 30\\)")
+    PASS_REGULAR_EXPRESSION "Wrote .*gxprint_cli\\.ppm \\(40 x 30, [0-9]+ contour levels\\)")
+
+add_test(NAME cli_gxprint_png
+    COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nd hgt\ngxprint gxprint_cli.png\nquit\n' | ${GRADS_NG_BIN} -o ${CMAKE_CURRENT_BINARY_DIR} && od -An -tx1 ${CMAKE_CURRENT_BINARY_DIR}/gxprint_cli.png | head -1 | grep -q '89 50 4e 47 0d 0a 1a 0a'")
+set_tests_properties(cli_gxprint_png PROPERTIES
+    PASS_REGULAR_EXPRESSION "Wrote .*gxprint_cli\\.png \\(40 x 30, [0-9]+ contour levels\\)")
 
 add_test(NAME cli_gxprint_no_display
     COMMAND sh -c "printf 'gxprint a.ppm\nquit\n' | ${GRADS_NG_BIN}")
@@ -214,9 +219,9 @@ set_tests_properties(cli_print_msg PROPERTIES
     PASS_REGULAR_EXPRESSION "no longer valid.*gxprint")
 
 add_test(NAME cli_gxprint_badext
-    COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nd hgt\ngxprint a.png\nquit\n' | ${GRADS_NG_BIN}")
+    COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nd hgt\ngxprint a.gif\nquit\n' | ${GRADS_NG_BIN}")
 set_tests_properties(cli_gxprint_badext PROPERTIES
-    PASS_REGULAR_EXPRESSION "only \\.ppm output is implemented")
+    PASS_REGULAR_EXPRESSION "only \\.ppm/\\.png output is implemented")
 
 add_test(NAME cli_close_ok
     COMMAND sh -c "printf 'open ${SAMPLE_CTL}\nclose 1\nquit\n' | ${GRADS_NG_BIN}")

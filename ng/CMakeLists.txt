@@ -48,6 +48,8 @@ add_library(ngcore STATIC
     src/backend/platform.c
     src/eval/array.c
     src/render/shade.c
+    src/render/contour.c
+    src/render/png.c
 )
 target_include_directories(ngcore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include

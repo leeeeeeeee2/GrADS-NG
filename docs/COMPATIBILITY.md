@@ -9,7 +9,7 @@ baseline: what is promised, what holds today, and what is intentionally absent.
 |---|---|---|
 | `open file.ctl` | ✅ full descriptor | parsed by `ng_ctl_parse`; failures name the reason |
 | `q file` | ✅ summary | prints dims + var count + names |
-| `d var` | ✅ values summary | t=1,z=1 slice stats (UNDEF-aware); plots in M5, expressions in M3 |
+| `d var` | ✅ values summary | t=1,z=1 slice stats (UNDEF-aware); `gxprint f.ppm`/`.png` renders shaded + contours (M5) |
 | `quit` / `exit` | ✅ | leaves REPL / ends `-c` |
 | `help` | ✅ | lists supported commands |
 | `set t/z`, `q dims` | ✅ selection | 1-based validated indices on the default file |

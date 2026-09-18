@@ -13,6 +13,7 @@
 #include "parser/grads_ng_parser.h"
 #include "array.h"
 #include "shade.h"
+#include "png.h"
 
 /* exec_command results */
 #define NG_CMD_OK   0
@@ -80,6 +81,7 @@ static void print_cmd_help(void) {
     printf("  set e N           Select ensemble member (1-based)\n");
     printf("  d <expr>          Summarize an expression slice\n");
     printf("  gxprint out.ppm   Write the last display as shaded PPM\n");
+    printf("  gxprint out.png   Write the last display as shaded PNG\n");
     printf("  help              Show this list\n");
     printf("  quit | exit       Leave GrADS-NG\n");
 }
@@ -146,7 +148,7 @@ static int display_array(const char* label, const ng_array_t* a,
         if (nundef > 0) printf(" (%ld missing)", nundef);
         printf("\n");
     }
-    printf("(M3 reports values; plots arrive in M5.)\n");
+    printf("(M3 reports values; `gxprint out.ppm`/`.png` renders shaded + contours.)\n");
     return NG_CMD_OK;
 }
 
@@ -412,23 +414,32 @@ static int exec_command(ng_cli_state_t* st, char* line) {
         return NG_CMD_ERR;
     }
 
-    /* M5 slice 1: shaded PPM of the last display. Only .ppm exists so
-     * far; PNG/vector backends arrive in later slices. */
+    /* M5 slice 2: shaded + contour lines of the last display, as PPM
+     * or dependency-free PNG. Vector/text/map primitives arrive later. */
     if (cmd_word_eq(word, "gxprint")) {
         char* name = args;
         size_t nlen;
         char full[1024];
+        int want_png = 0;
+        unsigned char* rgb;
+        int w, h, nlev;
 
         while (*name && isspace((unsigned char)*name)) name++;
         if (*name == '\0') {
-            fprintf(stderr, "ERROR: 'gxprint' needs an output path.\n\nUsage:\n    gxprint out.ppm\n");
+            fprintf(stderr, "ERROR: 'gxprint' needs an output path.\n\nUsage:\n    gxprint out.ppm\n    gxprint out.png\n");
             return NG_CMD_ERR;
         }
         nlen = strlen(name);
-        if (nlen < 5 ||
-            (strcmp(name + nlen - 4, ".ppm") != 0 &&
-             strcmp(name + nlen - 4, ".PPM") != 0)) {
-            fprintf(stderr, "ERROR: only .ppm output is implemented (got \"%s\").\n", name);
+        if (nlen < 5) {
+            fprintf(stderr, "ERROR: only .ppm/.png output is implemented (got \"%s\").\n", name);
+            return NG_CMD_ERR;
+        }
+        if (strcmp(name + nlen - 4, ".png") == 0 ||
+            strcmp(name + nlen - 4, ".PNG") == 0) {
+            want_png = 1;
+        } else if (strcmp(name + nlen - 4, ".ppm") != 0 &&
+                   strcmp(name + nlen - 4, ".PPM") != 0) {
+            fprintf(stderr, "ERROR: only .ppm/.png output is implemented (got \"%s\").\n", name);
             return NG_CMD_ERR;
         }
         if (!st->last) {
@@ -441,14 +452,44 @@ static int exec_command(ng_cli_state_t* st, char* line) {
         } else {
             snprintf(full, sizeof(full), "%s/%s", st->output_dir, name);
         }
-        if (ng_shade_write_ppm(full, st->last_label, st->last->data,
-                               st->last->nx, st->last->ny) != 0) {
-            fprintf(stderr, "ERROR: cannot write \"%s\".\n", full);
+        rgb = ng_shade_render_rgb(st->last->data,
+                                  st->last->nx, st->last->ny);
+        if (!rgb) {
+            fprintf(stderr, "ERROR: cannot render \"%s\" (out of memory).\n",
+                    st->last_label);
             return NG_CMD_ERR;
         }
-        printf("Wrote %s (%d x %d)\n", full,
-               st->last->nx * NG_SHADE_CELL,
-               st->last->ny * NG_SHADE_CELL);
+        nlev = ng_shade_overlay_contours(rgb, st->last->nx * NG_SHADE_CELL,
+                                         st->last->ny * NG_SHADE_CELL,
+                                         st->last->data,
+                                         st->last->nx, st->last->ny);
+        ng_shade_raster_size(st->last->nx, st->last->ny, &w, &h);
+        if (want_png) {
+            if (ng_png_write_rgb(full, st->last_label, rgb, w, h) != 0) {
+                fprintf(stderr, "ERROR: cannot write \"%s\".\n", full);
+                free(rgb);
+                return NG_CMD_ERR;
+            }
+        } else {
+            /* PPM shares the raster so both formats show the display. */
+            FILE* fp = fopen(full, "wb");
+            if (!fp) {
+                fprintf(stderr, "ERROR: cannot write \"%s\".\n", full);
+                free(rgb);
+                return NG_CMD_ERR;
+            }
+            fprintf(fp, "P6\n# grads-ng shaded %s\n%d %d\n255\n",
+                    (st->last_label[0]) ? st->last_label : "display", w, h);
+            if (fwrite(rgb, 1, (size_t)w * h * 3, fp) != (size_t)w * h * 3) {
+                fprintf(stderr, "ERROR: cannot write \"%s\".\n", full);
+                fclose(fp);
+                free(rgb);
+                return NG_CMD_ERR;
+            }
+            fclose(fp);
+        }
+        free(rgb);
+        printf("Wrote %s (%d x %d, %d contour levels)\n", full, w, h, nlev);
         return NG_CMD_OK;
     }
 

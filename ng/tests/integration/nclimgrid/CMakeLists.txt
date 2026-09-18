@@ -74,6 +74,7 @@ nclimgrid_py_test(nclimgrid_reference test_reference.py)
 nclimgrid_py_test(nclimgrid_ng test_ng.py)
 nclimgrid_py_test(nclimgrid_workflow test_workflow.py)
 nclimgrid_py_test(nclimgrid_perf test_perf.py)
+nclimgrid_py_test(nclimgrid_render_plot test_render_plot.py)
 
 # Explicit entry point (goal §28):  cmake --build <bdir> --target test-nclimgrid
 add_custom_target(test-nclimgrid
